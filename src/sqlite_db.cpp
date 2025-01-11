@@ -9,6 +9,8 @@
 
 namespace duckdb {
 
+static bool debug_sqlite_print_queries = false;
+
 SQLiteDB::SQLiteDB() : db(nullptr) {
 }
 
@@ -65,6 +67,9 @@ SQLiteDB SQLiteDB::Open(const string &path, const SQLiteOpenOptions &options, bo
 
 bool SQLiteDB::TryPrepare(const string &query, SQLiteStatement &stmt) {
 	stmt.db = db;
+	if (debug_sqlite_print_queries) {
+		Printer::Print(query + "\n");
+	}
 	auto rc = sqlite3_prepare_v2(db, query.c_str(), -1, &stmt.stmt, nullptr);
 	if (rc != SQLITE_OK) {
 		return false;
@@ -82,6 +87,9 @@ SQLiteStatement SQLiteDB::Prepare(const string &query) {
 }
 
 void SQLiteDB::Execute(const string &query) {
+	if (debug_sqlite_print_queries) {
+		Printer::Print(query + "\n");
+	}
 	auto rc = sqlite3_exec(db, query.c_str(), nullptr, nullptr, nullptr);
 	if (rc != SQLITE_OK) {
 		string error = "Failed to execute query \"" + query + "\": " + string(sqlite3_errmsg(db));
@@ -302,6 +310,10 @@ idx_t SQLiteDB::RunPragma(string pragma_name) {
 		return idx_t(stmt.GetValue<int64_t>(0));
 	}
 	throw InternalException("No result returned from pragma " + pragma_name);
+}
+
+void SQLiteDB::DebugSetPrintQueries(bool print) {
+	debug_sqlite_print_queries = print;
 }
 
 } // namespace duckdb

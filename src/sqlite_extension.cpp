@@ -3,6 +3,7 @@
 #endif
 #include "duckdb.hpp"
 
+#include "sqlite_db.hpp"
 #include "sqlite_scanner.hpp"
 #include "sqlite_storage.hpp"
 #include "sqlite_scanner_extension.hpp"
@@ -15,6 +16,10 @@ using namespace duckdb;
 
 extern "C" {
 
+static void SetSqliteDebugQueryPrint(ClientContext &context, SetScope scope, Value &parameter) {
+	SQLiteDB::DebugSetPrintQueries(BooleanValue::Get(parameter));
+}
+
 static void LoadInternal(DatabaseInstance &db) {
 	SqliteScanFunction sqlite_fun;
 	ExtensionUtil::RegisterFunction(db, sqlite_fun);
@@ -24,6 +29,9 @@ static void LoadInternal(DatabaseInstance &db) {
 
 	auto &config = DBConfig::GetConfig(db);
 	config.AddExtensionOption("sqlite_all_varchar", "Load all SQLite columns as VARCHAR columns", LogicalType::BOOLEAN);
+
+	config.AddExtensionOption("sqlite_debug_show_queries", "DEBUG SETTING: print all queries sent to SQLite to stdout",
+	                          LogicalType::BOOLEAN, Value::BOOLEAN(false), SetSqliteDebugQueryPrint);
 
 	config.storage_extensions["sqlite_scanner"] = make_uniq<SQLiteStorageExtension>();
 }

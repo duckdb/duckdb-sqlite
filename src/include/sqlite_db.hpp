@@ -49,6 +49,8 @@ public:
 	bool ColumnExists(const string &table_name, const string &column_name);
 	vector<IndexInfo> GetIndexInfo(const string &table_name);
 
+	static void DebugSetPrintQueries(bool print);
+	
 	bool IsOpen();
 	void Close();
 };
