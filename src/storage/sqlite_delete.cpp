@@ -65,7 +65,7 @@ SinkResultType SQLiteDelete::Sink(ExecutionContext &context, DataChunk &chunk, O
 //===--------------------------------------------------------------------===//
 // GetData
 //===--------------------------------------------------------------------===//
-SourceResultType SQLiteDelete::GetData(ExecutionContext &context, DataChunk &chunk, OperatorSourceInput &input) const {
+SourceResultType SQLiteDelete::GetDataInternal(ExecutionContext &context, DataChunk &chunk, OperatorSourceInput &input) const {
 	auto &insert_gstate = sink_state->Cast<SQLiteDeleteGlobalState>();
 	chunk.SetCardinality(1);
 	chunk.SetValue(0, 0, Value::BIGINT(insert_gstate.delete_count));

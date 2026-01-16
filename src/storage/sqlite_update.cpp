@@ -81,7 +81,7 @@ SinkResultType SQLiteUpdate::Sink(ExecutionContext &context, DataChunk &chunk, O
 //===--------------------------------------------------------------------===//
 // GetData
 //===--------------------------------------------------------------------===//
-SourceResultType SQLiteUpdate::GetData(ExecutionContext &context, DataChunk &chunk, OperatorSourceInput &input) const {
+SourceResultType SQLiteUpdate::GetDataInternal(ExecutionContext &context, DataChunk &chunk, OperatorSourceInput &input) const {
 	auto &insert_gstate = sink_state->Cast<SQLiteUpdateGlobalState>();
 	chunk.SetCardinality(1);
 	chunk.SetValue(0, 0, Value::BIGINT(insert_gstate.update_count));
