@@ -1,0 +1,60 @@
+name: SQLite Tests
+on: [push, pull_request,repository_dispatch, merge_group]
+
+jobs:
+  linux:
+    name: Linux (amd64)
+    runs-on: ubuntu-latest
+    env:
+      GEN: ninja
+      CC: 'ccache gcc'
+      CXX: 'ccache g++'
+      CCACHE_DIR: ${{ github.workspace }}/ccache
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        submodules: 'true'
+
+    - name: Install required ubuntu packages
+      run: |
+        echo "set man-db/auto-update false" | sudo debconf-communicate
+        sudo dpkg-reconfigure man-db
+        sudo apt-get update -y -q -o=Dpkg::Use-Pty=0
+        sudo apt-get install -y -q -o=Dpkg::Use-Pty=0 \
+          build-essential \
+          ccache \
+          cmake \
+          ninja-build
+
+    - name: Cache Key
+      id: cache_key
+      working-directory: ./duckdb
+      run: |
+        DUCKDB_VERSION=$(git rev-parse --short HEAD)
+        KEY="${{ runner.os }}-${{ runner.arch }}-$DUCKDB_VERSION"
+        echo "value=${KEY}" >> "${GITHUB_OUTPUT}"
+
+    - name: Restore Cache
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ github.workspace }}/ccache
+        key: ${{ steps.cache_key.outputs.value }}
+
+    - name: Build extension
+      run: |
+        make release
+
+    - name: Test extension
+      env: 
+        LOCAL_EXTENSION_REPO: ${{ github.workspace }}/build/release/repository/
+      run: |
+        make test
+
+    - name: Save Cache
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ github.workspace }}/ccache
+        key: ${{ steps.cache_key.outputs.value }}
