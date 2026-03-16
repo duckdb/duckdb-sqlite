@@ -38,15 +38,19 @@ TableFunction SQLiteTableEntry::GetScanFunction(ClientContext &context, unique_p
 		result->rows_per_group = optional_idx();
 	}
 
-	bool use_global_db = !transaction.IsReadOnly() || sqlite_catalog.InMemory();
-
-	Value threads_setting;
-	if (!use_global_db && context.TryGetCurrentSetting("threads", threads_setting) && !threads_setting.IsNull()) {
-		auto current_threads = NumericCast<idx_t>(BigIntValue::Get(threads_setting.DefaultCastAs(LogicalType::BIGINT)));
-		if (current_threads <= 1) {
-			use_global_db = true;
-		}
+	int64_t threads = 1;
+	Value threads_val;
+	if (context.TryGetCurrentSetting("threads", threads_val)) {
+		threads = BigIntValue::Get(threads_val);
 	}
+
+	bool disable_multithreaded_scans = false;
+	Value disable_multithreaded_scans_val;
+	if (context.TryGetCurrentSetting("sqlite_disable_multithreaded_scans", disable_multithreaded_scans_val)) {
+		disable_multithreaded_scans = BooleanValue::Get(disable_multithreaded_scans_val);
+	}
+
+	bool use_global_db = !transaction.IsReadOnly() || sqlite_catalog.InMemory() || threads <= 1 || disable_multithreaded_scans;
 
 	if (use_global_db) {
 		// for in-memory databases or if we have transaction-local changes we can

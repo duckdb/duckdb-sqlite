@@ -39,3 +39,16 @@ query I
 SELECT * FROM simple.test2
 ----
 84
+
+# check option is supported
+
+statement ok
+SET sqlite_disable_multithreaded_scans = TRUE;
+
+query I
+SELECT * FROM simple.test2
+----
+84
+
+statement ok
+SET sqlite_disable_multithreaded_scans = FALSE;
