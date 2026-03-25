@@ -41,7 +41,7 @@ optional_ptr<SchemaCatalogEntry> SQLiteCatalog::LookupSchema(CatalogTransaction 
 	if (if_not_found == OnEntryNotFound::RETURN_NULL) {
 		return nullptr;
 	}
-	throw BinderException("SQLite databases only have a single schema - \"%s\"", DEFAULT_SCHEMA);
+	throw BinderException("SQLite databases only have a single schema - \"%s\"", std::string(DEFAULT_SCHEMA));
 }
 
 bool SQLiteCatalog::InMemory() {
