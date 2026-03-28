@@ -11,6 +11,8 @@
 #include "duckdb/transaction/transaction.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "sqlite_db.hpp"
+#include <atomic>
+#include <mutex>
 
 namespace duckdb {
 class SQLiteCatalog;
@@ -34,10 +36,23 @@ public:
 	static SQLiteTransaction &Get(ClientContext &context, Catalog &catalog);
 
 private:
+	// Transaction state machine
+	enum class TransactionState {
+		INIT,       // Initial state, transaction not started
+		STARTED,    // Start() called, BEGIN TRANSACTION pending
+		EXECUTING   // BEGIN TRANSACTION executed, transaction is active
+	};
+
 	SQLiteCatalog &sqlite_catalog;
 	SQLiteDB *db;
 	SQLiteDB owned_db;
 	unique_ptr<SQLiteCatalogMap> catalog_map;
+
+	// Lazy opening support (thread-safe)
+	string pending_path;                      // Path to open when GetDB() is called
+	std::atomic<bool> db_opened{false};       // Whether the database has been opened
+	std::atomic<TransactionState> state{TransactionState::INIT};  // Transaction state
+	std::mutex db_mutex;                      // Mutex for double-checked locking in GetDB()
 };
 
 } // namespace duckdb
