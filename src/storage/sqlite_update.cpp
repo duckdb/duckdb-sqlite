@@ -85,6 +85,7 @@ SourceResultType SQLiteUpdate::GetDataInternal(ExecutionContext &context, DataCh
 	auto &insert_gstate = sink_state->Cast<SQLiteUpdateGlobalState>();
 	chunk.SetCardinality(1);
 	chunk.SetValue(0, 0, Value::BIGINT(insert_gstate.update_count));
+	FlatVector::SetSize(chunk.data[0], count_t(1));
 
 	return SourceResultType::FINISHED;
 }
@@ -111,7 +112,7 @@ PhysicalOperator &SQLiteCatalog::PlanUpdate(ClientContext &context, PhysicalPlan
 		throw BinderException("RETURNING clause not yet supported for updates of a SQLite table");
 	}
 	for (auto &expr : op.expressions) {
-		if (expr->type == ExpressionType::VALUE_DEFAULT) {
+		if (expr->GetExpressionType() == ExpressionType::VALUE_DEFAULT) {
 			throw BinderException("SET DEFAULT is not yet supported for updates of a SQLite table");
 		}
 	}

@@ -122,6 +122,7 @@ SourceResultType SQLiteInsert::GetDataInternal(ExecutionContext &context, DataCh
 	auto &insert_gstate = sink_state->Cast<SQLiteInsertGlobalState>();
 	chunk.SetCardinality(1);
 	chunk.SetValue(0, 0, Value::BIGINT(insert_gstate.insert_count));
+	FlatVector::SetSize(chunk.data[0], count_t(1));
 
 	return SourceResultType::FINISHED;
 }

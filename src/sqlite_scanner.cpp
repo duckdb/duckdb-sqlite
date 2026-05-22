@@ -252,10 +252,16 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 			}
 		}
 
+		auto SetVectorSizes = [&](idx_t count) {
+			for (idx_t col_idx = 0; col_idx < output.ColumnCount(); col_idx++) {
+				FlatVector::SetSize(output.data[col_idx], count_t(count));
+			}
+		};
 		idx_t out_idx = 0;
 		while (true) {
 			if (out_idx == STANDARD_VECTOR_SIZE) {
 				output.SetCardinality(out_idx);
+				SetVectorSizes(out_idx);
 				return;
 			}
 			auto &stmt = state.stmt;
@@ -263,6 +269,7 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 			if (!has_more) {
 				state.done = true;
 				output.SetCardinality(out_idx);
+				SetVectorSizes(out_idx);
 				break;
 			}
 			state.scan_count++;
@@ -270,7 +277,7 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 				auto &out_vec = output.data[col_idx];
 				auto sqlite_column_type = stmt.GetType(col_idx);
 				if (sqlite_column_type == SQLITE_NULL) {
-					auto &mask = FlatVector::Validity(out_vec);
+					auto &mask = FlatVector::ValidityMutable(out_vec);
 					mask.Set(out_idx, false);
 					continue;
 				}
@@ -279,26 +286,26 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 				switch (out_vec.GetType().id()) {
 				case LogicalTypeId::BIGINT:
 					stmt.CheckTypeMatches(bind_data, val, sqlite_column_type, SQLITE_INTEGER, col_idx);
-					FlatVector::GetData<int64_t>(out_vec)[out_idx] = sqlite3_value_int64(val);
+					FlatVector::GetDataMutable<int64_t>(out_vec)[out_idx] = sqlite3_value_int64(val);
 					break;
 				case LogicalTypeId::DOUBLE:
 					stmt.CheckTypeIsFloatOrInteger(val, sqlite_column_type, col_idx);
-					FlatVector::GetData<double>(out_vec)[out_idx] = sqlite3_value_double(val);
+					FlatVector::GetDataMutable<double>(out_vec)[out_idx] = sqlite3_value_double(val);
 					break;
 				case LogicalTypeId::VARCHAR:
 					stmt.CheckTypeMatches(bind_data, val, sqlite_column_type, SQLITE_TEXT, col_idx);
-					FlatVector::GetData<string_t>(out_vec)[out_idx] = StringVector::AddString(
+					FlatVector::GetDataMutable<string_t>(out_vec)[out_idx] = StringVector::AddString(
 					    out_vec, (const char *)sqlite3_value_text(val), sqlite3_value_bytes(val));
 					break;
 				case LogicalTypeId::DATE:
 					if (sqlite_column_type == SQLITE_INTEGER) {
 						// unix timestamp
-						FlatVector::GetData<date_t>(out_vec)[out_idx] =
+						FlatVector::GetDataMutable<date_t>(out_vec)[out_idx] =
 						    Timestamp::GetDate(ConvertTimestampInteger(val));
 					} else if (sqlite_column_type == SQLITE_FLOAT) {
-						FlatVector::GetData<date_t>(out_vec)[out_idx] = Timestamp::GetDate(ConvertTimestampFloat(val));
+						FlatVector::GetDataMutable<date_t>(out_vec)[out_idx] = Timestamp::GetDate(ConvertTimestampFloat(val));
 					} else if (sqlite_column_type == SQLITE_TEXT) {
-						FlatVector::GetData<date_t>(out_vec)[out_idx] =
+						FlatVector::GetDataMutable<date_t>(out_vec)[out_idx] =
 						    Date::FromCString((const char *)sqlite3_value_text(val), sqlite3_value_bytes(val));
 					} else {
 						throw NotImplementedException("Unimplemented SQLite type for column of type DATE\n* SET "
@@ -317,12 +324,12 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 					// timestamps
 					if (sqlite_column_type == SQLITE_INTEGER) {
 						// unix timestamp
-						FlatVector::GetData<timestamp_t>(out_vec)[out_idx] = ConvertTimestampInteger(val);
+						FlatVector::GetDataMutable<timestamp_t>(out_vec)[out_idx] = ConvertTimestampInteger(val);
 					} else if (sqlite_column_type == SQLITE_FLOAT) {
-						FlatVector::GetData<timestamp_t>(out_vec)[out_idx] = ConvertTimestampFloat(val);
+						FlatVector::GetDataMutable<timestamp_t>(out_vec)[out_idx] = ConvertTimestampFloat(val);
 					} else if (sqlite_column_type == SQLITE_TEXT) {
 						// ISO-8601
-						FlatVector::GetData<timestamp_t>(out_vec)[out_idx] =
+						FlatVector::GetDataMutable<timestamp_t>(out_vec)[out_idx] =
 						    Timestamp::FromCString((const char *)sqlite3_value_text(val), sqlite3_value_bytes(val));
 					} else {
 						throw NotImplementedException("Unimplemented SQLite type for column of type TIMESTAMP\n* SET "
@@ -331,7 +338,7 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 					}
 					break;
 				case LogicalTypeId::BLOB:
-					FlatVector::GetData<string_t>(out_vec)[out_idx] = StringVector::AddStringOrBlob(
+					FlatVector::GetDataMutable<string_t>(out_vec)[out_idx] = StringVector::AddStringOrBlob(
 					    out_vec, (const char *)sqlite3_value_blob(val), sqlite3_value_bytes(val));
 					break;
 				default:

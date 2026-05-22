@@ -80,6 +80,7 @@ SourceResultType SQLiteDelete::GetDataInternal(ExecutionContext &context, DataCh
 	}
 	chunk.SetCardinality(1);
 	chunk.SetValue(0, 0, Value::BIGINT(insert_gstate.delete_count));
+	FlatVector::SetSize(chunk.data[0], count_t(1));
 
 	return SourceResultType::FINISHED;
 }
