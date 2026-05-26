@@ -1,5 +1,9 @@
 name: SQLite Tests
-on: [push, pull_request,repository_dispatch, merge_group]
+on: 
+  push:
+  pull_request:
+  repository_dispatch:
+  merge_group:
 
 jobs:
   linux:
@@ -13,9 +17,8 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
-        fetch-depth: 0
         submodules: 'true'
 
     - name: Install required ubuntu packages
@@ -38,7 +41,7 @@ jobs:
         echo "value=${KEY}" >> "${GITHUB_OUTPUT}"
 
     - name: Restore Cache
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v5
       with:
         path: ${{ github.workspace }}/ccache
         key: ${{ steps.cache_key.outputs.value }}
@@ -47,14 +50,15 @@ jobs:
       run: |
         make release
 
+    - name: Save Cache
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ github.workspace }}/ccache
+        key: ${{ steps.cache_key.outputs.value }}
+
     - name: Test extension
       env: 
         LOCAL_EXTENSION_REPO: ${{ github.workspace }}/build/release/repository/
       run: |
-        make test
+        ./build/release/test/unittest 'test/*'
 
-    - name: Save Cache
-      uses: actions/cache/save@v4
-      with:
-        path: ${{ github.workspace }}/ccache
-        key: ${{ steps.cache_key.outputs.value }}
