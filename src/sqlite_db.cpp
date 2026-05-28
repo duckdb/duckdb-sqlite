@@ -234,8 +234,9 @@ bool SQLiteDB::ColumnExists(const string &table_name, const string &column_name)
 
 bool SQLiteDB::GetRowIdInfo(const string &table_name, RowIdInfo &row_id_info) {
 	SQLiteStatement stmt;
-	if (!TryPrepare(StringUtil::Format("SELECT MIN(ROWID), MAX(ROWID) FROM \"%s\"",
-	                                   SQLiteUtils::SanitizeIdentifier(table_name)),
+	auto sanitized_table_name = SQLiteUtils::SanitizeIdentifier(table_name);
+	if (!TryPrepare(StringUtil::Format("SELECT (SELECT MIN(ROWID) FROM \"%s\"), (SELECT MAX(ROWID) FROM \"%s\")",
+	                                   sanitized_table_name, sanitized_table_name),
 	                stmt)) {
 		return false;
 	}
