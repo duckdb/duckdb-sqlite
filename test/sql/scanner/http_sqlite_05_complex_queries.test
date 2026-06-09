@@ -1,0 +1,47 @@
+# name: test/sql/scanner/http_sqlite_05_complex_queries.test
+# description: Complex queries on attached remote SQLite database
+# group: [sqlite_scanner]
+
+require sqlite_scanner
+
+require httpfs
+
+require-env SQLITE_HTTP_TEST_URL
+
+# First attach the database
+statement ok
+ATTACH '{SQLITE_HTTP_TEST_URL}/sakila.db' AS http_db (TYPE sqlite);
+
+# Complex aggregation on attached database
+query TIR
+SELECT c.name as Category, COUNT(*) as FilmCount, ROUND(AVG(f.length), 2) as AvgLength
+FROM http_db.film f
+JOIN http_db.film_category fc ON f.film_id = fc.film_id
+JOIN http_db.category c ON fc.category_id = c.category_id
+GROUP BY c.name
+ORDER BY FilmCount DESC, c.name
+LIMIT 3;
+----
+Sports	74	128.2
+Foreign	73	121.7
+Family	69	114.78
+
+# Window functions on attached database
+query TTII
+SELECT
+    a.first_name as FirstName,
+    a.last_name as LastName,
+    COUNT(fa.film_id) as FilmCount,
+    ROW_NUMBER() OVER (ORDER BY COUNT(fa.film_id) DESC, a.last_name, a.first_name) as ActorRank
+FROM http_db.actor a
+JOIN http_db.film_actor fa ON a.actor_id = fa.actor_id
+GROUP BY a.first_name, a.last_name
+ORDER BY FilmCount DESC, a.last_name, a.first_name
+LIMIT 3;
+----
+SUSAN	DAVIS	54	1
+GINA	DEGENERES	42	2
+WALTER	TORN	41	3
+
+statement ok
+DETACH http_db;

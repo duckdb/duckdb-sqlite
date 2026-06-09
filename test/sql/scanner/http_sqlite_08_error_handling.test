@@ -1,0 +1,37 @@
+# name: test/sql/scanner/http_sqlite_08_error_handling.test
+# description: Error handling for remote SQLite databases (hermetic, via local test server)
+# group: [sqlite_scanner]
+
+require sqlite_scanner
+
+require httpfs
+
+require-env SQLITE_HTTP_TEST_URL
+
+# A reachable URL whose content is not a SQLite database
+statement error
+SELECT * FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/not_a_database.txt', 'test');
+----
+file is not a database
+
+# A non-existent file (server responds 404) maps to "unable to open database file"
+statement error
+SELECT * FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/definitely_nonexistent.sqlite', 'test');
+----
+unable to open database file
+
+# A refused connection (reserved port 1) surfaces as a clean open failure, not a crash
+statement error
+SELECT * FROM sqlite_scan('http://127.0.0.1:1/db.sqlite', 'test');
+----
+unable to open database file
+
+# The VFS routes through DuckDB's FileSystem and honors its external-access control: with external
+# access disabled, the open is blocked by the filesystem layer before any network request.
+statement ok
+SET enable_external_access=false;
+
+statement error
+SELECT * FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/sakila.db', 'category');
+----
+file system operations are disabled by configuration
