@@ -28,9 +28,19 @@ jobs:
         sudo apt-get update -y -q -o=Dpkg::Use-Pty=0
         sudo apt-get install -y -q -o=Dpkg::Use-Pty=0 \
           build-essential \
+          libcurl4-openssl-dev \
+          libssl-dev \
           ccache \
           cmake \
-          ninja-build
+          ninja-build \
+          python3
+
+    - name: Install rclone
+      run: |
+        # apt's rclone predates `serve s3`; install a pinned recent build for the rclone-backed tests.
+        curl -fsSL https://downloads.rclone.org/v1.74.2/rclone-v1.74.2-linux-amd64.zip -o /tmp/rclone.zip
+        sudo unzip -oj /tmp/rclone.zip '*/rclone' -d /usr/local/bin
+        rclone version
 
     - name: Cache Key
       id: cache_key
@@ -57,12 +67,27 @@ jobs:
         key: ${{ steps.cache_key.outputs.value }}
 
     - name: Test extension
-      env: 
+      env:
         LOCAL_EXTENSION_REPO: ${{ github.workspace }}/build/release/repository/
         SQLITE_TPCH_GENERATED: 1
       run: |
         make data/db/tpch.db
-        ./build/release/test/unittest 'test/*'
+        # Wrap unittest with the local HTTP server so the remote tests (require-env SQLITE_HTTP_TEST_URL)
+        # run instead of skipping. The concurrency + s3 tests gate on other env vars and run in the steps below.
+        python3 scripts/sqlite_http_test_server.py ./build/release/test/unittest 'test/*'
+
+    - name: Test concurrency (rclone serve http)
+      run: |
+        # The concurrent-lifecycle test needs a robust server; rclone serve http handles it (--server
+        # rclone-http sets SQLITE_HTTP_ROBUST so the test runs).
+        python3 scripts/sqlite_http_test_server.py --server rclone-http \
+          ./build/release/test/unittest 'test/sql/scanner/http_sqlite_15_concurrent_lifecycle.test'
+
+    - name: Test s3:// path (rclone serve s3)
+      run: |
+        # Exercise the s3:// transport + the credentialed -wal/-journal sidecar probe via rclone serve s3.
+        python3 scripts/sqlite_http_test_server.py --server rclone-s3 \
+          ./build/release/test/unittest 'test/sql/scanner/http_sqlite_16_s3.test'
 
   linux-sanitized:
     name: Linux ${{ matrix.sanitizer.name }} (amd64)
@@ -105,10 +130,20 @@ jobs:
         sudo apt-get update -y -q -o=Dpkg::Use-Pty=0
         sudo apt-get install -y -q -o=Dpkg::Use-Pty=0 \
           build-essential \
+          libcurl4-openssl-dev \
+          libssl-dev \
           ccache \
           cmake \
           mold \
-          ninja-build
+          ninja-build \
+          python3
+
+    - name: Install rclone
+      run: |
+        # apt's rclone predates `serve s3`; install a pinned recent build for the rclone-backed tests.
+        curl -fsSL https://downloads.rclone.org/v1.74.2/rclone-v1.74.2-linux-amd64.zip -o /tmp/rclone.zip
+        sudo unzip -oj /tmp/rclone.zip '*/rclone' -d /usr/local/bin
+        rclone version
 
     - name: Cache Key
       id: cache_key
@@ -138,7 +173,16 @@ jobs:
         key: ${{ steps.cache_key.outputs.value }}
 
     - name: Test extension
-      env: 
+      env:
         LOCAL_EXTENSION_REPO: ${{ github.workspace }}/build/relassert/repository/
       run: |
-        ./build/relassert/test/unittest
+        # Run under the local HTTP server so the remote tests run (not skip) under the sanitizers --
+        # this exercises the VFS lifetime/refcount paths under ASan/TSan.
+        python3 scripts/sqlite_http_test_server.py ./build/relassert/test/unittest
+
+    - name: Test concurrency under sanitizer (rclone serve http)
+      run: |
+        # The concurrent-lifecycle test under the sanitizers: many contexts register/open/scan/unregister
+        # at once, contending the VFS registry to surface races / use-after-free in the retire-then-reap path.
+        python3 scripts/sqlite_http_test_server.py --server rclone-http \
+          ./build/relassert/test/unittest 'test/sql/scanner/http_sqlite_15_concurrent_lifecycle.test'

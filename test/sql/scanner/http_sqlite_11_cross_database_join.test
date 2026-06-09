@@ -1,0 +1,49 @@
+# name: test/sql/scanner/http_sqlite_11_cross_database_join.test
+# description: Join across two attached remote SQLite databases; multi-handle VFS teardown with an open transaction
+# group: [sqlite_scanner]
+
+require sqlite_scanner
+
+require httpfs
+
+require-env SQLITE_HTTP_TEST_URL
+
+# Attach the remote under two distinct aliases. The query string makes them distinct paths to DuckDB
+# and the external file cache while resolving to the same file on the server, so both attached
+# catalogs share the one per-context VFS wrapper, each with its own deferred-init transaction.
+statement ok
+ATTACH '{SQLITE_HTTP_TEST_URL}/sakila.db' AS db1 (TYPE sqlite);
+
+statement ok
+ATTACH '{SQLITE_HTTP_TEST_URL}/sakila.db?alias=2' AS db2 (TYPE sqlite);
+
+# Join across the two attached remote databases.
+query TI
+SELECT c.name, COUNT(*) AS films
+FROM db1.category c
+JOIN db2.film_category fc ON c.category_id = fc.category_id
+GROUP BY c.name
+ORDER BY films DESC, c.name
+LIMIT 3;
+----
+Sports	74
+Foreign	73
+Family	69
+
+# Open an explicit transaction touching both remote catalogs, then leave it active at teardown. The
+# shared VFS wrapper has two open handles (open_file_count == 2); OnConnectionClosed unregisters it
+# before the handles close, so the retire/reap path must keep it alive until the last close.
+statement ok
+BEGIN TRANSACTION;
+
+query I
+SELECT COUNT(*) FROM db1.film;
+----
+1000
+
+query I
+SELECT COUNT(*) FROM db2.film;
+----
+1000
+
+# No COMMIT/ROLLBACK/DETACH: the connection is destroyed with both remote handles open.
