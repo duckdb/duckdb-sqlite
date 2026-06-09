@@ -10,6 +10,8 @@
 
 #include "duckdb/transaction/transaction.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
+#include "duckdb/common/mutex.hpp"
+#include "duckdb/common/atomic.hpp"
 #include "sqlite_db.hpp"
 
 namespace duckdb {
@@ -38,6 +40,16 @@ private:
 	SQLiteDB *db;
 	SQLiteDB owned_db;
 	unique_ptr<SQLiteCatalogMap> catalog_map;
+
+	// Remote (HTTP/S3) databases defer their connection open + BEGIN to first use (GetDB()) so no
+	// network I/O runs while the MetaTransaction lock is held in StartTransaction(). Local and
+	// in-memory databases open eagerly in the constructor. `initialized` is atomic for the
+	// lock-free fast path in GetDB(); `started` is written in Start() (before any scan thread) or under
+	// init_lock in GetDB(), and read in Start(), Commit, and Rollback (the latter two after the scans
+	// join), so it needs no atomic.
+	mutex init_lock;
+	atomic<bool> initialized {false};
+	bool started = false;
 };
 
 } // namespace duckdb
