@@ -4,8 +4,12 @@
 #include "duckdb/storage/table_storage_info.hpp"
 #include "duckdb/parser/column_list.hpp"
 #include "duckdb/parser/parser.hpp"
+#include "duckdb/common/exception.hpp"
+#include "duckdb/common/file_system.hpp"
+#include "duckdb/main/client_context.hpp"
 #include "sqlite_db.hpp"
 #include "sqlite_stmt.hpp"
+#include "sqlite_duckdb_vfs_cache.hpp"
 
 namespace duckdb {
 
@@ -21,7 +25,9 @@ SQLiteDB::~SQLiteDB() {
 	Close();
 }
 
-SQLiteDB::SQLiteDB(SQLiteDB &&other) noexcept {
+SQLiteDB::SQLiteDB(SQLiteDB &&other) noexcept : db(nullptr) {
+	// db must be initialized before the swap: as a constructor, the member is otherwise indeterminate,
+	// and swapping garbage into `other` would make other's destructor sqlite3_close() a wild pointer.
 	std::swap(db, other.db);
 }
 
@@ -30,39 +36,152 @@ SQLiteDB &SQLiteDB::operator=(SQLiteDB &&other) noexcept {
 	return *this;
 }
 
-SQLiteDB SQLiteDB::Open(const string &path, const SQLiteOpenOptions &options, bool is_shared) {
-	SQLiteDB result;
+int SQLiteDB::GetOpenFlags(const SQLiteOpenOptions &options, bool is_shared, bool force_read_only) {
 	int flags = SQLITE_OPEN_PRIVATECACHE;
-	if (options.access_mode == AccessMode::READ_ONLY) {
+
+	if (force_read_only || options.access_mode == AccessMode::READ_ONLY) {
+		// VFS-backed opens (remote/WASM) are always read-only
 		flags |= SQLITE_OPEN_READONLY;
 	} else {
 		flags |= SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE;
 	}
+
 	if (!is_shared) {
 		// FIXME: we should just make sure we are not re-using the same `sqlite3`
 		// object across threads
 		flags |= SQLITE_OPEN_NOMUTEX;
 	}
+
 	flags |= SQLITE_OPEN_EXRESCODE;
-	auto rc = sqlite3_open_v2(path.c_str(), &result.db, flags, nullptr);
-	if (rc != SQLITE_OK) {
-		throw std::runtime_error("Unable to open database \"" + path + "\": " + string(sqlite3_errstr(rc)));
-	}
-	// default busy time-out of 5 seconds
+	return flags;
+}
+
+void SQLiteDB::ApplyBusyTimeout(sqlite3 *db, const SQLiteOpenOptions &options) {
 	if (options.busy_timeout > 0) {
 		if (options.busy_timeout > NumericLimits<int>::Maximum()) {
 			throw std::runtime_error("busy_timeout out of range - must be within "
 			                         "valid range for type int");
 		}
-		rc = sqlite3_busy_timeout(result.db, int(options.busy_timeout));
+		auto rc = sqlite3_busy_timeout(db, int(options.busy_timeout));
 		if (rc != SQLITE_OK) {
 			throw std::runtime_error("Failed to set busy timeout");
 		}
 	}
+}
+
+void SQLiteDB::HandleOpenError(const string &path, int rc, ClientContext *context) {
+	string error_msg;
+	int primary_error = rc & 0xFF;
+
+	// True when the open went through our VFS: OpenWithVFS passes a context (OpenLocal does not), and
+	// it is only reached for paths the VFS handles.
+	const bool used_vfs = context && SQLiteDuckDBCacheVFS::CanHandlePath(path);
+
+	switch (primary_error) {
+	case SQLITE_CANTOPEN:
+		error_msg = "unable to open database file";
+		break;
+	case SQLITE_PERM:
+		error_msg = "access permission denied";
+		break;
+	case SQLITE_IOERR:
+		// Through the VFS, I/O errors are filesystem/network issues, not a local disk fault
+		if (used_vfs) {
+			error_msg = "unable to open database file";
+		} else {
+			error_msg = "disk I/O error";
+		}
+		break;
+	case SQLITE_BUSY:
+		error_msg = "database is locked";
+		break;
+	case SQLITE_NOMEM:
+		error_msg = "out of memory";
+		break;
+	case SQLITE_READONLY:
+		error_msg = "attempt to write a readonly database";
+		break;
+	case SQLITE_CORRUPT:
+		error_msg = "file is not a database";
+		break;
+	default:
+		error_msg = sqlite3_errstr(rc);
+		break;
+	}
+	// For VFS-backed opens, enrich the terse SQLite-code message with the full filesystem error this
+	// attempt recorded (e.g. HTTP status/URL), which SQLite otherwise discards. Cleared at open start,
+	// so a non-empty value belongs to this attempt; empty (e.g. the bytes arrived but were not a
+	// database) leaves the terse message untouched.
+	if (used_vfs) {
+		const string detail = SQLiteDuckDBCacheVFS::GetLastErrorForContext(*context);
+		if (!detail.empty()) {
+			throw ConnectionException("Unable to open database \"%s\": %s (%s)", path, error_msg, detail);
+		}
+	}
+	throw ConnectionException("Unable to open database \"%s\": %s", path, error_msg);
+}
+
+SQLiteDB SQLiteDB::OpenLocal(const string &path, const SQLiteOpenOptions &options, bool is_shared) {
+	SQLiteDB result;
+	int flags = GetOpenFlags(options, is_shared, false);
+
+	auto rc = sqlite3_open_v2(path.c_str(), &result.db, flags, nullptr);
+	if (rc != SQLITE_OK) {
+		throw std::runtime_error("Unable to open database \"" + path + "\": " + string(sqlite3_errstr(rc)));
+	}
+
+	ApplyBusyTimeout(result.db, options);
+
 	if (!options.journal_mode.empty()) {
 		result.Execute("PRAGMA journal_mode=" + KeywordHelper::EscapeQuotes(options.journal_mode, '\''));
 	}
 	return result;
+}
+
+// Opens a read-only SQLite database through DuckDB's FileSystem (the caching VFS), for any path
+// DuckDB owns rather than a native local file.
+SQLiteDB SQLiteDB::OpenWithVFS(const string &path, const SQLiteOpenOptions &options, ClientContext &context,
+                               bool is_shared) {
+	SQLiteDuckDBCacheVFS::Register(context);
+	// Reset any error recorded by a previous open on this context, so a failure below surfaces
+	// only the rich httpfs error produced by THIS attempt (see HandleOpenError).
+	SQLiteDuckDBCacheVFS::ClearLastErrorForContext(context);
+
+	SQLiteDB result;
+	int flags = GetOpenFlags(options, is_shared, true);
+
+	const auto vfs_name = SQLiteDuckDBCacheVFS::GetVFSNameForContext(context);
+	auto rc = sqlite3_open_v2(path.c_str(), &result.db, flags, vfs_name.c_str());
+	if (rc != SQLITE_OK) {
+		HandleOpenError(path, rc, &context);
+	}
+
+	ApplyBusyTimeout(result.db, options);
+
+	// Keep SQLite-side temp B-trees (sorter/materialization spills) in memory: this read-only VFS
+	// rejects the nameless temp-file open its xOpen would receive, and a remote read-only database has
+	// no local scratch space to spill to.
+	result.Execute("PRAGMA temp_store=MEMORY");
+
+	return result;
+}
+
+// Overload for callers without a ClientContext (in-memory / local only). A remote path must go through
+// the caching VFS, so assert it is not one here. (":memory:" is not a remote file on any platform, so
+// it stays valid, including on WASM.)
+SQLiteDB SQLiteDB::Open(const string &path, const SQLiteOpenOptions &options, bool is_shared) {
+	D_ASSERT(!FileSystem::IsRemoteFile(path));
+	return OpenLocal(path, options, is_shared);
+}
+
+// Main entry point for opening SQLite databases.
+// Paths DuckDB's FileSystem owns (any remote filesystem, and all paths on WASM) are opened read-only
+// through the caching VFS; plain local files use native SQLite (read-write, locking, WAL).
+SQLiteDB SQLiteDB::Open(const string &path, const SQLiteOpenOptions &options, ClientContext &context, bool is_shared) {
+	if (SQLiteDuckDBCacheVFS::CanHandlePath(path)) {
+		return OpenWithVFS(path, options, context, is_shared);
+	}
+	return OpenLocal(path, options, is_shared);
 }
 
 bool SQLiteDB::TryPrepare(const string &query, SQLiteStatement &stmt) {
