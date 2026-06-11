@@ -40,7 +40,7 @@ public:
 
 string GetInsertSQL(const SQLiteInsert &insert, SQLiteTableEntry *entry) {
 	string result;
-	result = "INSERT INTO " + KeywordHelper::WriteOptionallyQuoted(entry->name);
+	result = "INSERT INTO " + KeywordHelper::WriteOptionallyQuoted(entry->name.GetIdentifierName());
 	auto &columns = entry->GetColumns();
 	idx_t column_count;
 	if (!insert.column_index_map.empty()) {
@@ -63,7 +63,7 @@ string GetInsertSQL(const SQLiteInsert &insert, SQLiteTableEntry *entry) {
 				result += ", ";
 			}
 			auto &col = columns.GetColumn(column_indexes[c]);
-			result += KeywordHelper::WriteOptionallyQuoted(col.GetName());
+			result += KeywordHelper::WriteOptionallyQuoted(col.GetName().GetIdentifierName());
 		}
 		result += ")";
 	} else {
@@ -136,7 +136,7 @@ string SQLiteInsert::GetName() const {
 
 InsertionOrderPreservingMap<string> SQLiteInsert::ParamsToString() const {
 	InsertionOrderPreservingMap<string> result;
-	result["Table Name"] = table ? table->name : info->Base().table;
+	result["Table Name"] = table ? table->name.GetIdentifierName() : info->Base().table.GetIdentifierName();
 	return result;
 }
 

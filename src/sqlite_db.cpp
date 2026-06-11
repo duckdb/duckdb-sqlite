@@ -174,7 +174,7 @@ void SQLiteDB::GetTableInfo(const string &table_name, ColumnList &columns, vecto
 	SQLiteStatement stmt;
 
 	idx_t primary_key_index = idx_t(-1);
-	vector<string> primary_keys;
+	vector<Identifier> primary_keys;
 
 	bool found = false;
 
@@ -191,9 +191,9 @@ void SQLiteDB::GetTableInfo(const string &table_name, ColumnList &columns, vecto
 
 		if (pk) {
 			primary_key_index = cid;
-			primary_keys.push_back(sqlite_colname);
+			primary_keys.emplace_back(sqlite_colname);
 		}
-		ColumnDefinition column(std::move(sqlite_colname), std::move(column_type));
+		ColumnDefinition column(Identifier(std::move(sqlite_colname)), std::move(column_type));
 		if (!default_value.empty() && default_value != "\"\"") {
 			auto expressions = Parser::ParseExpressionList(default_value);
 			if (expressions.empty()) {

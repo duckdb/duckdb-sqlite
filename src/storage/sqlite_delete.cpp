@@ -68,7 +68,7 @@ SourceResultType SQLiteDelete::GetDataInternal(ExecutionContext &context, DataCh
 	if (!insert_gstate.delete_done) {
 		if (!insert_gstate.statement.IsOpen()) {
 			auto &transaction = SQLiteTransaction::Get(context.client, insert_gstate.table.catalog);
-			insert_gstate.statement = transaction.GetDB().Prepare(GetDeleteSQL(insert_gstate.table.name));
+			insert_gstate.statement = transaction.GetDB().Prepare(GetDeleteSQL(insert_gstate.table.name.GetIdentifierName()));
 		}
 		for (auto row_id : insert_gstate.rowids) {
 			insert_gstate.statement.Bind<int64_t>(0, row_id);
@@ -94,7 +94,7 @@ string SQLiteDelete::GetName() const {
 
 InsertionOrderPreservingMap<string> SQLiteDelete::ParamsToString() const {
 	InsertionOrderPreservingMap<string> result;
-	result["Table Name"] = table.name;
+	result["Table Name"] = table.name.GetIdentifierName();
 	return result;
 }
 
@@ -107,7 +107,7 @@ PhysicalOperator &SQLiteCatalog::PlanDelete(ClientContext &context, PhysicalPlan
 		throw BinderException("RETURNING clause not yet supported for deletion of a SQLite table");
 	}
 	auto &bound_ref = op.expressions[0]->Cast<BoundReferenceExpression>();
-	auto &delete_op = planner.Make<SQLiteDelete>(op, op.table, bound_ref.index);
+	auto &delete_op = planner.Make<SQLiteDelete>(op, op.table, bound_ref.Index());
 	delete_op.children.push_back(plan);
 	return delete_op;
 }

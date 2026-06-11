@@ -108,7 +108,7 @@ void ExtractColumnIds(const ParsedExpression &expr, TableCatalogEntry &table, Cr
 	if (expr.GetExpressionType() == ExpressionType::COLUMN_REF) {
 		auto &colref = expr.Cast<ColumnRefExpression>();
 		auto &colname = colref.GetColumnName();
-		auto &column_def = table.GetColumn(colname);
+		auto &column_def = table.GetColumn(Identifier(colname));
 		auto index = column_def.Oid();
 		if (std::find(info.column_ids.begin(), info.column_ids.end(), index) == info.column_ids.end()) {
 			info.column_ids.push_back(index);
@@ -156,7 +156,7 @@ optional_ptr<CatalogEntry> SQLiteTransaction::GetCatalogEntry(const string &entr
 	unique_ptr<CatalogEntry> result;
 	switch (type) {
 	case CatalogType::TABLE_ENTRY: {
-		CreateTableInfo info(sqlite_catalog.GetMainSchema(), entry_name);
+		CreateTableInfo info(sqlite_catalog.GetMainSchema(), Identifier(entry_name));
 		bool all_varchar = false;
 		Value sqlite_all_varchar;
 		if (context.lock()->TryGetCurrentSetting("sqlite_all_varchar", sqlite_all_varchar)) {
@@ -177,7 +177,7 @@ optional_ptr<CatalogEntry> SQLiteTransaction::GetCatalogEntry(const string &entr
 			view_info = CreateViewInfo::FromCreateView(*context.lock(), sqlite_catalog.GetMainSchema(), sql);
 		} catch (std::exception &ex) {
 			auto view_sql = ExtractSelectStatement(sql);
-			auto catalog_name = StringUtil::Replace(sqlite_catalog.GetName(), "\"", "\"\"");
+			auto catalog_name = StringUtil::Replace(sqlite_catalog.GetName().GetIdentifierName(), "\"", "\"\"");
 			auto escaped_view_sql = StringUtil::Replace(view_sql, "'", "''");
 			auto view_def = StringUtil::Format("CREATE VIEW %s AS FROM sqlite_query(\"%s\", '%s')", entry_name,
 			                                   catalog_name, escaped_view_sql);

@@ -29,14 +29,14 @@ public:
 
 string GetUpdateSQL(SQLiteTableEntry &table, const vector<PhysicalIndex> &index) {
 	string result;
-	result = "UPDATE " + KeywordHelper::WriteOptionallyQuoted(table.name);
+	result = "UPDATE " + KeywordHelper::WriteOptionallyQuoted(table.name.GetIdentifierName());
 	result += " SET ";
 	for (idx_t i = 0; i < index.size(); i++) {
 		if (i > 0) {
 			result += ", ";
 		}
 		auto &col = table.GetColumn(LogicalIndex(index[i].index));
-		result += KeywordHelper::WriteOptionallyQuoted(col.GetName());
+		result += KeywordHelper::WriteOptionallyQuoted(col.GetName().GetIdentifierName());
 		result += " = ?";
 	}
 	result += " WHERE rowid = ?";
@@ -99,7 +99,7 @@ string SQLiteUpdate::GetName() const {
 
 InsertionOrderPreservingMap<string> SQLiteUpdate::ParamsToString() const {
 	InsertionOrderPreservingMap<string> result;
-	result["Table Name"] = table.name;
+	result["Table Name"] = table.name.GetIdentifierName();
 	return result;
 }
 
