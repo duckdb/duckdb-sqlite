@@ -8,6 +8,10 @@ require httpfs
 
 require-env SQLITE_HTTP_TEST_URL
 
+# These concurrent scans need a robust HTTP server: they open several remote connections at once, which
+# the stdlib test server does not serve reliably. Runs under the rclone-backed server (which sets this).
+require-env SQLITE_HTTP_ROBUST
+
 statement ok
 SET threads=4;
 

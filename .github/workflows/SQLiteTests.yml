@@ -104,10 +104,10 @@ jobs:
 
     - name: Test concurrency (rclone serve http)
       run: |
-        # The concurrent-lifecycle test needs a robust server; rclone serve http handles it (--server
-        # rclone-http sets SQLITE_HTTP_ROBUST so the test runs).
+        # The concurrent-scan and concurrent-lifecycle tests need a robust server; rclone serve http
+        # handles them (--server rclone-http sets SQLITE_HTTP_ROBUST so they run).
         python3 scripts/sqlite_http_test_server.py --server rclone-http \
-          ./build/release/test/unittest 'test/sql/scanner/http_sqlite_15_concurrent_lifecycle.test'
+          ./build/release/test/unittest 'test/sql/scanner/http_sqlite_*concurrent*'
 
     - name: Test s3:// path (rclone serve s3)
       run: |
@@ -208,7 +208,7 @@ jobs:
 
     - name: Test concurrency under sanitizer (rclone serve http)
       run: |
-        # The concurrent-lifecycle test under the sanitizers: many contexts register/open/scan/unregister
-        # at once, contending the VFS registry to surface races / use-after-free in the retire-then-reap path.
+        # The concurrency tests under the sanitizers: many contexts register/open/scan/unregister at once,
+        # contending the VFS registry to surface races / use-after-free in the retire-then-reap path.
         python3 scripts/sqlite_http_test_server.py --server rclone-http \
-          ./build/relassert/test/unittest 'test/sql/scanner/http_sqlite_15_concurrent_lifecycle.test'
+          ./build/relassert/test/unittest 'test/sql/scanner/http_sqlite_*concurrent*'
