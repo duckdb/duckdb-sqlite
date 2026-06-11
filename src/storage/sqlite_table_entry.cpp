@@ -23,18 +23,18 @@ void SQLiteTableEntry::BindUpdateConstraints(Binder &, LogicalGet &, LogicalProj
 TableFunction SQLiteTableEntry::GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data) {
 	auto result = make_uniq<SqliteBindData>();
 	for (auto &col : columns.Logical()) {
-		result->names.push_back(col.GetName());
+		result->names.emplace_back(col.GetName().GetIdentifierName());
 		result->types.push_back(col.GetType());
 	}
 	auto &sqlite_catalog = catalog.Cast<SQLiteCatalog>();
 	result->file_name = sqlite_catalog.path;
-	result->table_name = name;
+	result->table_name = name.GetIdentifierName();
 	result->all_varchar = all_varchar;
 
 	auto &transaction = Transaction::Get(context, catalog).Cast<SQLiteTransaction>();
 	auto &db = transaction.GetDB();
 
-	if (!db.GetRowIdInfo(name, result->row_id_info)) {
+	if (!db.GetRowIdInfo(name.GetIdentifierName(), result->row_id_info)) {
 		result->rows_per_group = optional_idx();
 	}
 
@@ -71,14 +71,14 @@ TableStorageInfo SQLiteTableEntry::GetStorageInfo(ClientContext &context) {
 	TableStorageInfo result;
 
 	RowIdInfo info;
-	if (!db.GetRowIdInfo(name, info)) {
+	if (!db.GetRowIdInfo(name.GetIdentifierName(), info)) {
 		// probably
 		result.cardinality = 10000;
 	} else {
 		result.cardinality = info.max_rowid.GetIndex() - info.min_rowid.GetIndex();
 	}
 
-	result.index_info = db.GetIndexInfo(name);
+	result.index_info = db.GetIndexInfo(name.GetIdentifierName());
 	return result;
 }
 

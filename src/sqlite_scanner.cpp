@@ -68,7 +68,7 @@ static unique_ptr<FunctionData> SqliteBind(ClientContext &context, TableFunction
 	}
 	db.GetTableInfo(result->table_name, columns, constraints, result->all_varchar);
 	for (auto &column : columns.Logical()) {
-		names.push_back(column.GetName());
+		names.emplace_back(column.GetName().GetIdentifierName());
 		return_types.push_back(column.GetType());
 	}
 
@@ -427,7 +427,7 @@ static void AttachFunction(ClientContext &context, TableFunctionInput &data_p, D
 		auto tables = db.GetTables();
 		for (auto &table_name : tables) {
 			dconn.TableFunction("sqlite_scan", {Value(data.file_name), Value(table_name)})
-			    ->CreateView(table_name, data.overwrite, false);
+			    ->CreateView(Identifier(table_name), data.overwrite, false);
 		}
 	}
 	{

@@ -37,7 +37,7 @@ string GetCreateTableSQL(CreateTableInfo &info) {
 	if (info.on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
 		ss << "IF NOT EXISTS ";
 	}
-	ss << KeywordHelper::WriteOptionallyQuoted(info.table);
+	ss << KeywordHelper::WriteOptionallyQuoted(info.table.GetIdentifierName());
 	ss << TableCatalogEntry::ColumnsToSQL(info.columns, info.constraints);
 	ss << ";";
 	return ss.str();
@@ -46,7 +46,7 @@ string GetCreateTableSQL(CreateTableInfo &info) {
 void SQLiteSchemaEntry::TryDropEntry(ClientContext &context, CatalogType catalog_type, const string &name) {
 	DropInfo info;
 	info.type = catalog_type;
-	info.name = name;
+	info.name = Identifier(name);
 	info.cascade = false;
 	info.if_not_found = OnEntryNotFound::RETURN_NULL;
 	DropEntry(context, info);
@@ -58,7 +58,7 @@ optional_ptr<CatalogEntry> SQLiteSchemaEntry::CreateTable(CatalogTransaction tra
 	auto table_name = base_info.table;
 	if (base_info.on_conflict == OnCreateConflict::REPLACE_ON_CONFLICT) {
 		// CREATE OR REPLACE - drop any existing entries first (if any)
-		TryDropEntry(transaction.GetContext(), CatalogType::TABLE_ENTRY, table_name);
+		TryDropEntry(transaction.GetContext(), CatalogType::TABLE_ENTRY, table_name.GetIdentifierName());
 	}
 
 	sqlite_transaction.GetDB().Execute(GetCreateTableSQL(base_info));
@@ -89,9 +89,9 @@ string GetCreateIndexSQL(CreateIndexInfo &info, TableCatalogEntry &tbl) {
 	if (info.on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
 		sql += " IF NOT EXISTS ";
 	}
-	sql += KeywordHelper::WriteOptionallyQuoted(info.index_name);
+	sql += KeywordHelper::WriteOptionallyQuoted(info.index_name.GetIdentifierName());
 	sql += " ON ";
-	sql += KeywordHelper::WriteOptionallyQuoted(tbl.name);
+	sql += KeywordHelper::WriteOptionallyQuoted(tbl.name.GetIdentifierName());
 	sql += "(";
 	for (idx_t i = 0; i < info.parsed_expressions.size(); i++) {
 		if (i > 0) {
@@ -117,7 +117,7 @@ string GetCreateViewSQL(CreateViewInfo &info) {
 	if (info.on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
 		sql += "IF NOT EXISTS ";
 	}
-	sql += KeywordHelper::WriteOptionallyQuoted(info.view_name);
+	sql += KeywordHelper::WriteOptionallyQuoted(info.view_name.GetIdentifierName());
 	sql += " ";
 	if (!info.aliases.empty()) {
 		sql += "(";
@@ -126,7 +126,7 @@ string GetCreateViewSQL(CreateViewInfo &info) {
 				sql += ", ";
 			}
 			auto &alias = info.aliases[i];
-			sql += KeywordHelper::WriteOptionallyQuoted(alias);
+			sql += KeywordHelper::WriteOptionallyQuoted(alias.GetIdentifierName());
 		}
 		sql += ") ";
 	}
@@ -142,7 +142,7 @@ optional_ptr<CatalogEntry> SQLiteSchemaEntry::CreateView(CatalogTransaction tran
 	}
 	if (info.on_conflict == OnCreateConflict::REPLACE_ON_CONFLICT) {
 		// CREATE OR REPLACE - drop any existing entries first (if any)
-		TryDropEntry(transaction.GetContext(), CatalogType::VIEW_ENTRY, info.view_name);
+		TryDropEntry(transaction.GetContext(), CatalogType::VIEW_ENTRY, info.view_name.GetIdentifierName());
 	}
 	auto &sqlite_transaction = GetSQLiteTransaction(transaction);
 	sqlite_transaction.GetDB().Execute(GetCreateViewSQL(info));
@@ -179,32 +179,32 @@ optional_ptr<CatalogEntry> SQLiteSchemaEntry::CreateType(CatalogTransaction tran
 
 void SQLiteSchemaEntry::AlterTable(SQLiteTransaction &sqlite_transaction, RenameTableInfo &info) {
 	string sql = "ALTER TABLE ";
-	sql += KeywordHelper::WriteOptionallyQuoted(info.name);
+	sql += KeywordHelper::WriteOptionallyQuoted(info.name.GetIdentifierName());
 	sql += " RENAME TO ";
-	sql += KeywordHelper::WriteOptionallyQuoted(info.new_table_name);
+	sql += KeywordHelper::WriteOptionallyQuoted(info.new_table_name.GetIdentifierName());
 	sqlite_transaction.GetDB().Execute(sql);
 }
 
 void SQLiteSchemaEntry::AlterTable(SQLiteTransaction &sqlite_transaction, RenameColumnInfo &info) {
 	string sql = "ALTER TABLE ";
-	sql += KeywordHelper::WriteOptionallyQuoted(info.name);
+	sql += KeywordHelper::WriteOptionallyQuoted(info.name.GetIdentifierName());
 	sql += " RENAME COLUMN  ";
-	sql += KeywordHelper::WriteOptionallyQuoted(info.old_name);
+	sql += KeywordHelper::WriteOptionallyQuoted(info.old_name.GetIdentifierName());
 	sql += " TO ";
-	sql += KeywordHelper::WriteOptionallyQuoted(info.new_name);
+	sql += KeywordHelper::WriteOptionallyQuoted(info.new_name.GetIdentifierName());
 	sqlite_transaction.GetDB().Execute(sql);
 }
 
 void SQLiteSchemaEntry::AlterTable(SQLiteTransaction &sqlite_transaction, AddColumnInfo &info) {
 	if (info.if_column_not_exists) {
-		if (sqlite_transaction.GetDB().ColumnExists(info.name, info.new_column.GetName())) {
+		if (sqlite_transaction.GetDB().ColumnExists(info.name.GetIdentifierName(), info.new_column.GetName().GetIdentifierName())) {
 			return;
 		}
 	}
 	string sql = "ALTER TABLE ";
-	sql += KeywordHelper::WriteOptionallyQuoted(info.name);
+	sql += KeywordHelper::WriteOptionallyQuoted(info.name.GetIdentifierName());
 	sql += " ADD COLUMN  ";
-	sql += KeywordHelper::WriteOptionallyQuoted(info.new_column.Name());
+	sql += KeywordHelper::WriteOptionallyQuoted(info.new_column.Name().GetIdentifierName());
 	sql += " ";
 	sql += info.new_column.Type().ToString();
 	sqlite_transaction.GetDB().Execute(sql);
@@ -212,14 +212,14 @@ void SQLiteSchemaEntry::AlterTable(SQLiteTransaction &sqlite_transaction, AddCol
 
 void SQLiteSchemaEntry::AlterTable(SQLiteTransaction &sqlite_transaction, RemoveColumnInfo &info) {
 	if (info.if_column_exists) {
-		if (!sqlite_transaction.GetDB().ColumnExists(info.name, info.removed_column)) {
+		if (!sqlite_transaction.GetDB().ColumnExists(info.name.GetIdentifierName(), info.removed_column.GetIdentifierName())) {
 			return;
 		}
 	}
 	string sql = "ALTER TABLE ";
-	sql += KeywordHelper::WriteOptionallyQuoted(info.name);
+	sql += KeywordHelper::WriteOptionallyQuoted(info.name.GetIdentifierName());
 	sql += " DROP COLUMN  ";
-	sql += KeywordHelper::WriteOptionallyQuoted(info.removed_column);
+	sql += KeywordHelper::WriteOptionallyQuoted(info.removed_column.GetIdentifierName());
 	sqlite_transaction.GetDB().Execute(sql);
 }
 
@@ -247,7 +247,7 @@ void SQLiteSchemaEntry::Alter(CatalogTransaction catalog_transaction, AlterInfo 
 		                      "support RENAME TABLE, RENAME COLUMN, "
 		                      "ADD COLUMN and DROP COLUMN");
 	}
-	transaction.ClearTableEntry(info.name);
+	transaction.ClearTableEntry(info.name.GetIdentifierName());
 }
 
 void SQLiteSchemaEntry::Scan(ClientContext &context, CatalogType type,
@@ -269,7 +269,7 @@ void SQLiteSchemaEntry::Scan(ClientContext &context, CatalogType type,
 		return;
 	}
 	for (auto &entry_name : entries) {
-		callback(*GetEntry(GetCatalogTransaction(context), type, entry_name));
+		callback(*GetEntry(GetCatalogTransaction(context), type, Identifier(entry_name)));
 	}
 }
 void SQLiteSchemaEntry::Scan(CatalogType type, const std::function<void(CatalogEntry &)> &callback) {
@@ -294,7 +294,7 @@ void SQLiteSchemaEntry::DropEntry(ClientContext &context, DropInfo &info) {
 		throw InternalException("Failed to drop entry \"%s\" - could not find entry", info.name);
 	}
 	auto &transaction = SQLiteTransaction::Get(context, catalog);
-	transaction.DropEntry(info.type, info.name, info.cascade);
+	transaction.DropEntry(info.type, info.name.GetIdentifierName(), info.cascade);
 }
 
 optional_ptr<CatalogEntry> SQLiteSchemaEntry::LookupEntry(CatalogTransaction transaction,
