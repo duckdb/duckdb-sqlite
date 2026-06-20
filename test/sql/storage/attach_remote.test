@@ -2,6 +2,8 @@
 # description: test attaching remote DB (it is downloaded automatically)
 # group: [storage]
 
+require-env SQLITE_TEST_HTTPFS_AVAILABLE
+
 require sqlite_scanner
 
 require httpfs
