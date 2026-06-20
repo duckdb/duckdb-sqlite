@@ -1,5 +1,8 @@
 #include "sqlite_utils.hpp"
 
+#include <chrono>
+#include <random>
+
 namespace duckdb {
 
 void SQLiteUtils::Check(int rc, sqlite3 *db) {
