@@ -22,6 +22,8 @@ public:
 	static string SanitizeIdentifier(const string &table_name);
 	static LogicalType ToSQLiteType(const LogicalType &input);
 	string ToSQLiteTypeAlias(const LogicalType &input);
+  static string GetSystemTempDirectory(FileSystem &local_file_system);
+  static string GenerateRandomDirName(const string &prefix);
 };
 
 struct RowIdInfo {

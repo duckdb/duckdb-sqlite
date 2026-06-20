@@ -17,7 +17,7 @@ class SQLiteSchemaEntry;
 
 class SQLiteCatalog : public Catalog {
 public:
-	explicit SQLiteCatalog(AttachedDatabase &db_p, const string &path, SQLiteOpenOptions options);
+	explicit SQLiteCatalog(AttachedDatabase &db_p, SQLiteDBLocation location, SQLiteOpenOptions options);
 	~SQLiteCatalog();
 
 	string path;
@@ -76,6 +76,9 @@ private:
 	mutex in_memory_lock;
 	//! Whether or not there is any active transaction on the in-memory database
 	bool active_in_memory;
+  //! Temporary directory where the file resides, created by us (if not empty),
+  //! must be deleted on detach
+  string temporary_directory;
 };
 
 } // namespace duckdb

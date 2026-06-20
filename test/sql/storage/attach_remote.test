@@ -1,0 +1,24 @@
+# name: test/sql/storage/attach_remote.test
+# description: test attaching remote DB (it is downloaded automatically)
+# group: [storage]
+
+require sqlite_scanner
+
+require httpfs
+
+statement ok
+ATTACH 'https://github.com/duckdb/sqlite_scanner/raw/main/data/db/sakila.db'
+
+statement ok
+USE sakila
+
+query I
+SELECT COUNT(*) FROM actor
+----
+200
+
+statement ok
+USE memory
+
+statement ok
+DETACH sakila

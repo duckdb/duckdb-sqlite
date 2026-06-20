@@ -15,6 +15,19 @@ namespace duckdb {
 class SQLiteStatement;
 struct IndexInfo;
 
+struct SQLiteDBLocation {
+	string temp_directory;
+	string db_file_path;
+
+	explicit SQLiteDBLocation(std::string db_file_path_p)
+			: db_file_path(std::move(db_file_path_p)) {}
+
+	explicit SQLiteDBLocation(std::string temp_directory_p,
+														std::string db_file_path_p)
+			: temp_directory(std::move(temp_directory_p)),
+				db_file_path(std::move(db_file_path_p)) {}
+};
+
 class SQLiteDB {
 public:
 	SQLiteDB();

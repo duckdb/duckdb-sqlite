@@ -5,17 +5,27 @@
 #include "storage/sqlite_schema_entry.hpp"
 #include "storage/sqlite_transaction.hpp"
 #include "duckdb/common/exception/transaction_exception.hpp"
+#include "duckdb/common/local_file_system.hpp"
 
 namespace duckdb {
 
-SQLiteCatalog::SQLiteCatalog(AttachedDatabase &db_p, const string &path, SQLiteOpenOptions options_p)
-    : Catalog(db_p), path(path), options(std::move(options_p)), in_memory(path == ":memory:"), active_in_memory(false) {
+SQLiteCatalog::SQLiteCatalog(AttachedDatabase &db_p, SQLiteDBLocation location, SQLiteOpenOptions options_p)
+	: Catalog(db_p), path(std::move(location.db_file_path)), options(std::move(options_p)), in_memory(path == ":memory:"), active_in_memory(false),
+		temporary_directory(std::move(location.temp_directory)) {
 	if (InMemory()) {
 		in_memory_db = SQLiteDB::Open(path, options, true);
 	}
 }
 
 SQLiteCatalog::~SQLiteCatalog() {
+	try {
+		if (!temporary_directory.empty()) {
+			LocalFileSystem fs;
+			fs.RemoveDirectory(temporary_directory);
+		} 
+	} catch (...) {
+		// suppress
+	}
 }
 
 void SQLiteCatalog::Initialize(bool load_builtin) {

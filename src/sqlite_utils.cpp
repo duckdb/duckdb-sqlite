@@ -113,4 +113,55 @@ LogicalType SQLiteUtils::TypeToLogicalType(const string &sqlite_type) {
 	return LogicalType::VARCHAR;
 }
 
+static void AppendEnvVarValue(vector<string> &vec, const string &name) {
+	const char *val = std::getenv(name.c_str());
+	if (val != nullptr && *val != '\0') {
+		string val_str(val);
+		vec.emplace_back(std::move(val_str));
+	}
+}
+
+static vector<string> TempDirCandidates() {
+	vector<string> res;
+#ifdef _WIN32
+	vector<wchar_t> buf;
+	buf.resize(MAX_PATH + 2);
+	auto len = GetTempPath2W(static_cast<DWORD>(buf.size()), buf.data());
+	if (len > 0) { // The maximum possible return value is MAX_PATH+1 (261).
+		buf.resize(len);
+		buf[len + 1] = '\0';
+		string dirname = WindowsUtil::UnicodeToUTF8(buf);
+		res.emplace_back(std::move(dirname));
+	} else {
+		AppendEnvVarValue(res, "TEMP");
+		AppendEnvVarValue(res, "TMP");
+	}
+#else  // !_WIN32
+	AppendEnvVarValue(res, "TMPDIR");
+	AppendEnvVarValue(res, "TMP");
+	res.emplace_back("/tmp");
+	res.emplace_back("/var/tmp");
+	res.emplace_back(".");
+#endif // _WIN32
+	return res;
+}
+
+string SQLiteUtils::GetSystemTempDirectory(FileSystem &fs) {
+	for (const auto &dir : TempDirCandidates()) {
+		if (fs.DirectoryExists(dir)) {
+			return fs.CanonicalizePath(dir);
+		}
+	}
+	throw IOException("Unable to determine the OS temporary directory, setting "
+										"TMP environment variable may resolve this");
+}
+
+string SQLiteUtils::GenerateRandomDirName(const string &prefix) {
+	auto now = std::chrono::system_clock::now().time_since_epoch().count();
+	std::random_device rd;
+	std::mt19937 gen(rd());
+	std::uniform_int_distribution<> dis(0, 100000);
+	return prefix + "_" + std::to_string(now) + "_" + std::to_string(dis(gen));
+}
+
 } // namespace duckdb
