@@ -3,6 +3,13 @@
 #include <chrono>
 #include <random>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <fileapi.h>
+#include "duckdb/common/windows_util.hpp"
+#endif // _WIN32
+
 namespace duckdb {
 
 void SQLiteUtils::Check(int rc, sqlite3 *db) {
@@ -131,9 +138,7 @@ static vector<string> TempDirCandidates() {
 	buf.resize(MAX_PATH + 2);
 	auto len = GetTempPath2W(static_cast<DWORD>(buf.size()), buf.data());
 	if (len > 0) { // The maximum possible return value is MAX_PATH+1 (261).
-		buf.resize(len);
-		buf[len + 1] = '\0';
-		string dirname = WindowsUtil::UnicodeToUTF8(buf);
+		string dirname = WindowsUtil::UnicodeToUTF8(buf.data());
 		res.emplace_back(std::move(dirname));
 	} else {
 		AppendEnvVarValue(res, "TEMP");
