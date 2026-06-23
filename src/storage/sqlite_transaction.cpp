@@ -52,15 +52,18 @@ void SQLiteCatalogMap::EraseEntry(const string &entry_name) {
 }
 
 SQLiteTransaction::SQLiteTransaction(SQLiteCatalog &sqlite_catalog, TransactionManager &manager, ClientContext &context)
-    : Transaction(manager, context), sqlite_catalog(sqlite_catalog) {
+    : Transaction(manager, context), sqlite_catalog(sqlite_catalog), db(nullptr) {
 	if (sqlite_catalog.InMemory()) {
 		// in-memory database - get a reference to the in-memory connection
 		db = sqlite_catalog.GetInMemoryDatabase();
+		db_opened = true;
 	} else {
-		// on-disk database - open a new database connection
-		owned_db = SQLiteDB::Open(sqlite_catalog.path, sqlite_catalog.options, true);
-		db = &owned_db;
+		// on-disk database - defer opening until first actual use
+		pending_path = sqlite_catalog.path;
+		db = nullptr;
+		db_opened = false;
 	}
+	state = TransactionState::INIT;
 	catalog_map = make_uniq<SQLiteCatalogMap>();
 }
 
@@ -69,16 +72,69 @@ SQLiteTransaction::~SQLiteTransaction() {
 }
 
 void SQLiteTransaction::Start() {
-	db->Execute("BEGIN TRANSACTION");
+	// Transition from INIT to STARTED
+	// BEGIN TRANSACTION will be executed when GetDB() is called
+	D_ASSERT(state.load() == TransactionState::INIT);
+	state = TransactionState::STARTED;
 }
+
 void SQLiteTransaction::Commit() {
+	// Only commit if transaction is executing (i.e., GetDB() was called)
+	if (state.load() != TransactionState::EXECUTING) {
+		return;
+	}
+	D_ASSERT(db_opened.load());
 	db->Execute("COMMIT");
 }
+
 void SQLiteTransaction::Rollback() {
+	// Only rollback if transaction is executing (i.e., GetDB() was called)
+	if (state.load() != TransactionState::EXECUTING) {
+		return;
+	}
+	D_ASSERT(db_opened.load());
 	db->Execute("ROLLBACK");
 }
 
 SQLiteDB &SQLiteTransaction::GetDB() {
+	// Fast path: database already opened (in-memory or previously opened on-disk)
+	if (db_opened.load()) {
+		// Check if we need to execute BEGIN TRANSACTION
+		if (state.load() == TransactionState::STARTED) {
+			lock_guard<mutex> guard(db_mutex);
+			// Double check after acquiring lock
+			if (state.load() == TransactionState::STARTED) {
+				db->Execute("BEGIN TRANSACTION");
+				state = TransactionState::EXECUTING;
+			}
+		}
+		return *db;
+	}
+
+	// Slow path: need to open database (on-disk only, with mutex protection)
+	lock_guard<mutex> guard(db_mutex);
+
+	// Double check after acquiring lock
+	if (db_opened.load()) {
+		// Another thread opened it, but may still need BEGIN
+		if (state.load() == TransactionState::STARTED) {
+			db->Execute("BEGIN TRANSACTION");
+			state = TransactionState::EXECUTING;
+		}
+		return *db;
+	}
+
+	// Open the database file
+	owned_db = SQLiteDB::Open(pending_path, sqlite_catalog.options, true);
+	db = &owned_db;
+	db_opened = true;
+
+	// If transaction was started (STARTED state), execute BEGIN TRANSACTION now
+	if (state.load() == TransactionState::STARTED) {
+		db->Execute("BEGIN TRANSACTION");
+		state = TransactionState::EXECUTING;
+	}
+
 	return *db;
 }
 
@@ -147,6 +203,8 @@ optional_ptr<CatalogEntry> SQLiteTransaction::GetCatalogEntry(const string &entr
 	if (entry) {
 		return entry;
 	}
+	// Ensure database is opened before accessing
+	GetDB();
 	// catalog entry not found - look up table in main SQLite database
 	auto type = db->GetEntryType(entry_name);
 	if (type == CatalogType::INVALID) {
@@ -235,6 +293,8 @@ string GetDropSQL(CatalogType type, const string &table_name, bool cascade) {
 
 void SQLiteTransaction::DropEntry(CatalogType type, const string &table_name, bool cascade) {
 	catalog_map->EraseEntry(table_name);
+	// Ensure database is opened before accessing
+	GetDB();
 	db->Execute(GetDropSQL(type, table_name, cascade));
 }
 
