@@ -36,7 +36,7 @@ jobs:
       id: cache_key
       working-directory: ./duckdb
       run: |
-        DUCKDB_VERSION=$(git rev-parse --short HEAD)
+        DUCKDB_VERSION=$(git rev-parse --short=10 HEAD)
         KEY="${{ runner.os }}-${{ runner.arch }}-$DUCKDB_VERSION"
         echo "value=${KEY}" >> "${GITHUB_OUTPUT}"
 
@@ -114,7 +114,7 @@ jobs:
       id: cache_key
       working-directory: ./duckdb
       run: |
-        DUCKDB_VERSION=$(git rev-parse --short HEAD)
+        DUCKDB_VERSION=$(git rev-parse --short=10 HEAD)
         KEY="${{ runner.os }}-${{ runner.arch }}-$DUCKDB_VERSION"-relassert-${{ matrix.sanitizer.name }}
         echo "value=${KEY}" >> "${GITHUB_OUTPUT}"
 
