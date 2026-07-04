@@ -50,10 +50,8 @@ SELECT rowid, * FROM s1.test
 4	NULL
 
 # update with DEFAULT clause
-statement error
+statement ok
 UPDATE s1.test SET i = DEFAULT WHERE i = 4
-----
-not yet supported
 
 # multi column update in different orders
 statement ok

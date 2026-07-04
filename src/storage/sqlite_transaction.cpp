@@ -20,13 +20,14 @@ public:
 	optional_ptr<CatalogEntry> InsertEntry(const string &entry_name, unique_ptr<CatalogEntry> entry);
 	optional_ptr<CatalogEntry> GetEntry(const string &entry_name);
 	void EraseEntry(const string &entry_name);
+
 private:
 	mutex lock;
 	case_insensitive_map_t<unique_ptr<CatalogEntry>> catalog_entries;
 };
 
-
-optional_ptr<CatalogEntry> SQLiteCatalogMap::InsertEntry(const string &entry_name, unique_ptr<CatalogEntry> catalog_entry) {
+optional_ptr<CatalogEntry> SQLiteCatalogMap::InsertEntry(const string &entry_name,
+                                                         unique_ptr<CatalogEntry> catalog_entry) {
 	lock_guard<mutex> guard(lock);
 	auto entry = catalog_entries.find(entry_name);
 	if (entry != catalog_entries.end()) {
@@ -196,7 +197,8 @@ optional_ptr<CatalogEntry> SQLiteTransaction::GetCatalogEntry(const string &entr
 		}
 		auto &table = GetCatalogEntry(table_name)->Cast<TableCatalogEntry>();
 		auto index_info = FromCreateIndex(*context.lock(), table, std::move(sql));
-		index_info->catalog = sqlite_catalog.GetName();
+		index_info->SetQualifiedName(QualifiedName(sqlite_catalog.GetName(), index_info->GetQualifiedName().Schema(),
+		                                           index_info->GetQualifiedName().Name()));
 
 		auto index_entry = make_uniq<SQLiteIndexEntry>(sqlite_catalog, sqlite_catalog.GetMainSchema(), *index_info,
 		                                               std::move(table_name));
