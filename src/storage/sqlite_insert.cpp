@@ -136,7 +136,7 @@ string SQLiteInsert::GetName() const {
 
 InsertionOrderPreservingMap<string> SQLiteInsert::ParamsToString() const {
 	InsertionOrderPreservingMap<string> result;
-	result["Table Name"] = table ? table->name.GetIdentifierName() : info->Base().table.GetIdentifierName();
+	result["Table Name"] = table ? table->name.GetIdentifierName() : info->Base().GetTableName().GetIdentifierName();
 	return result;
 }
 

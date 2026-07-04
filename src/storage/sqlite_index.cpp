@@ -18,7 +18,7 @@ SQLiteCreateIndex::SQLiteCreateIndex(PhysicalPlan &physical_plan, unique_ptr<Cre
 SourceResultType SQLiteCreateIndex::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
                                             OperatorSourceInput &input) const {
 	auto &catalog = table.catalog;
-	auto &schema = catalog.GetSchema(context.client, info->schema);
+	auto &schema = catalog.GetSchema(context.client, info->GetQualifiedName().Schema());
 	auto transaction = schema.GetCatalogTransaction(context.client);
 	schema.CreateIndex(transaction, *info, table);
 

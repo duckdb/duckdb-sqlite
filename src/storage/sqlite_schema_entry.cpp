@@ -37,7 +37,7 @@ string GetCreateTableSQL(CreateTableInfo &info) {
 	if (info.on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
 		ss << "IF NOT EXISTS ";
 	}
-	ss << KeywordHelper::WriteOptionallyQuoted(info.table.GetIdentifierName());
+	ss << KeywordHelper::WriteOptionallyQuoted(info.GetTableName().GetIdentifierName());
 	ss << TableCatalogEntry::ColumnsToSQL(info.columns, info.constraints);
 	ss << ";";
 	return ss.str();
@@ -46,7 +46,7 @@ string GetCreateTableSQL(CreateTableInfo &info) {
 void SQLiteSchemaEntry::TryDropEntry(ClientContext &context, CatalogType catalog_type, const string &name) {
 	DropInfo info;
 	info.type = catalog_type;
-	info.name = Identifier(name);
+	info.SetName(Identifier(name));
 	info.cascade = false;
 	info.if_not_found = OnEntryNotFound::RETURN_NULL;
 	DropEntry(context, info);
@@ -55,7 +55,7 @@ void SQLiteSchemaEntry::TryDropEntry(ClientContext &context, CatalogType catalog
 optional_ptr<CatalogEntry> SQLiteSchemaEntry::CreateTable(CatalogTransaction transaction, BoundCreateTableInfo &info) {
 	auto &sqlite_transaction = GetSQLiteTransaction(transaction);
 	auto &base_info = info.Base();
-	auto table_name = base_info.table;
+	auto table_name = base_info.GetTableName();
 	if (base_info.on_conflict == OnCreateConflict::REPLACE_ON_CONFLICT) {
 		// CREATE OR REPLACE - drop any existing entries first (if any)
 		TryDropEntry(transaction.GetContext(), CatalogType::TABLE_ENTRY, table_name.GetIdentifierName());
@@ -89,7 +89,7 @@ string GetCreateIndexSQL(CreateIndexInfo &info, TableCatalogEntry &tbl) {
 	if (info.on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
 		sql += " IF NOT EXISTS ";
 	}
-	sql += KeywordHelper::WriteOptionallyQuoted(info.index_name.GetIdentifierName());
+	sql += KeywordHelper::WriteOptionallyQuoted(info.GetIndexName().GetIdentifierName());
 	sql += " ON ";
 	sql += KeywordHelper::WriteOptionallyQuoted(tbl.name.GetIdentifierName());
 	sql += "(";
@@ -117,7 +117,7 @@ string GetCreateViewSQL(CreateViewInfo &info) {
 	if (info.on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
 		sql += "IF NOT EXISTS ";
 	}
-	sql += KeywordHelper::WriteOptionallyQuoted(info.view_name.GetIdentifierName());
+	sql += KeywordHelper::WriteOptionallyQuoted(info.GetViewName().GetIdentifierName());
 	sql += " ";
 	if (!info.aliases.empty()) {
 		sql += "(";
@@ -142,11 +142,11 @@ optional_ptr<CatalogEntry> SQLiteSchemaEntry::CreateView(CatalogTransaction tran
 	}
 	if (info.on_conflict == OnCreateConflict::REPLACE_ON_CONFLICT) {
 		// CREATE OR REPLACE - drop any existing entries first (if any)
-		TryDropEntry(transaction.GetContext(), CatalogType::VIEW_ENTRY, info.view_name.GetIdentifierName());
+		TryDropEntry(transaction.GetContext(), CatalogType::VIEW_ENTRY, info.GetViewName().GetIdentifierName());
 	}
 	auto &sqlite_transaction = GetSQLiteTransaction(transaction);
 	sqlite_transaction.GetDB().Execute(GetCreateViewSQL(info));
-	return GetEntry(transaction, CatalogType::VIEW_ENTRY, info.view_name);
+	return GetEntry(transaction, CatalogType::VIEW_ENTRY, info.GetViewName());
 }
 
 optional_ptr<CatalogEntry> SQLiteSchemaEntry::CreateSequence(CatalogTransaction transaction, CreateSequenceInfo &info) {
@@ -179,7 +179,7 @@ optional_ptr<CatalogEntry> SQLiteSchemaEntry::CreateType(CatalogTransaction tran
 
 void SQLiteSchemaEntry::AlterTable(SQLiteTransaction &sqlite_transaction, RenameTableInfo &info) {
 	string sql = "ALTER TABLE ";
-	sql += KeywordHelper::WriteOptionallyQuoted(info.name.GetIdentifierName());
+	sql += KeywordHelper::WriteOptionallyQuoted(info.GetQualifiedName().Name().GetIdentifierName());
 	sql += " RENAME TO ";
 	sql += KeywordHelper::WriteOptionallyQuoted(info.new_table_name.GetIdentifierName());
 	sqlite_transaction.GetDB().Execute(sql);
@@ -187,7 +187,7 @@ void SQLiteSchemaEntry::AlterTable(SQLiteTransaction &sqlite_transaction, Rename
 
 void SQLiteSchemaEntry::AlterTable(SQLiteTransaction &sqlite_transaction, RenameColumnInfo &info) {
 	string sql = "ALTER TABLE ";
-	sql += KeywordHelper::WriteOptionallyQuoted(info.name.GetIdentifierName());
+	sql += KeywordHelper::WriteOptionallyQuoted(info.GetQualifiedName().Name().GetIdentifierName());
 	sql += " RENAME COLUMN  ";
 	sql += KeywordHelper::WriteOptionallyQuoted(info.old_name.GetIdentifierName());
 	sql += " TO ";
@@ -197,12 +197,12 @@ void SQLiteSchemaEntry::AlterTable(SQLiteTransaction &sqlite_transaction, Rename
 
 void SQLiteSchemaEntry::AlterTable(SQLiteTransaction &sqlite_transaction, AddColumnInfo &info) {
 	if (info.if_column_not_exists) {
-		if (sqlite_transaction.GetDB().ColumnExists(info.name.GetIdentifierName(), info.new_column.GetName().GetIdentifierName())) {
+		if (sqlite_transaction.GetDB().ColumnExists(info.GetQualifiedName().Name().GetIdentifierName(), info.new_column.GetName().GetIdentifierName())) {
 			return;
 		}
 	}
 	string sql = "ALTER TABLE ";
-	sql += KeywordHelper::WriteOptionallyQuoted(info.name.GetIdentifierName());
+	sql += KeywordHelper::WriteOptionallyQuoted(info.GetQualifiedName().Name().GetIdentifierName());
 	sql += " ADD COLUMN  ";
 	sql += KeywordHelper::WriteOptionallyQuoted(info.new_column.Name().GetIdentifierName());
 	sql += " ";
@@ -212,12 +212,12 @@ void SQLiteSchemaEntry::AlterTable(SQLiteTransaction &sqlite_transaction, AddCol
 
 void SQLiteSchemaEntry::AlterTable(SQLiteTransaction &sqlite_transaction, RemoveColumnInfo &info) {
 	if (info.if_column_exists) {
-		if (!sqlite_transaction.GetDB().ColumnExists(info.name.GetIdentifierName(), info.removed_column.GetIdentifierName())) {
+		if (!sqlite_transaction.GetDB().ColumnExists(info.GetQualifiedName().Name().GetIdentifierName(), info.removed_column.GetIdentifierName())) {
 			return;
 		}
 	}
 	string sql = "ALTER TABLE ";
-	sql += KeywordHelper::WriteOptionallyQuoted(info.name.GetIdentifierName());
+	sql += KeywordHelper::WriteOptionallyQuoted(info.GetQualifiedName().Name().GetIdentifierName());
 	sql += " DROP COLUMN  ";
 	sql += KeywordHelper::WriteOptionallyQuoted(info.removed_column.GetIdentifierName());
 	sqlite_transaction.GetDB().Execute(sql);
@@ -247,7 +247,7 @@ void SQLiteSchemaEntry::Alter(CatalogTransaction catalog_transaction, AlterInfo 
 		                      "support RENAME TABLE, RENAME COLUMN, "
 		                      "ADD COLUMN and DROP COLUMN");
 	}
-	transaction.ClearTableEntry(info.name.GetIdentifierName());
+	transaction.ClearTableEntry(info.GetQualifiedName().Name().GetIdentifierName());
 }
 
 void SQLiteSchemaEntry::Scan(ClientContext &context, CatalogType type,
@@ -286,15 +286,15 @@ void SQLiteSchemaEntry::DropEntry(ClientContext &context, DropInfo &info) {
 		throw BinderException("SQLite databases do not support dropping entries of type \"%s\"",
 		                      CatalogTypeToString(type));
 	}
-	auto table = GetEntry(GetCatalogTransaction(context), info.type, info.name);
+	auto table = GetEntry(GetCatalogTransaction(context), info.type, info.GetQualifiedName().Name());
 	if (!table) {
 		if (info.if_not_found == OnEntryNotFound::RETURN_NULL) {
 			return;
 		}
-		throw InternalException("Failed to drop entry \"%s\" - could not find entry", info.name);
+		throw InternalException("Failed to drop entry \"%s\" - could not find entry", info.GetQualifiedName().Name());
 	}
 	auto &transaction = SQLiteTransaction::Get(context, catalog);
-	transaction.DropEntry(info.type, info.name.GetIdentifierName(), info.cascade);
+	transaction.DropEntry(info.type, info.GetQualifiedName().Name().GetIdentifierName(), info.cascade);
 }
 
 optional_ptr<CatalogEntry> SQLiteSchemaEntry::LookupEntry(CatalogTransaction transaction,
