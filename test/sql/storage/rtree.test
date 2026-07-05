@@ -1,6 +1,6 @@
 # name: test/sql/storage/rtree.test
 # description: Test loading an RTree table
-# group: [sqlite_scanner]
+# group: [storage]
 
 require sqlite_scanner
 

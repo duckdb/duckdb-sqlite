@@ -1,6 +1,6 @@
 # name: test/sql/scanner/issue44.test
 # description: Test issue #44
-# group: [sqlite_scanner]
+# group: [scanner]
 
 require sqlite_scanner
 

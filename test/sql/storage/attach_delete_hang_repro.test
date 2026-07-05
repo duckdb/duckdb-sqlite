@@ -1,6 +1,6 @@
 # name: test/sql/storage/attach_delete_hang_repro.test
 # description: reproduce large full-table delete behavior on attached SQLite table
-# group: [sqlite_storage]
+# group: [storage]
 
 require sqlite_scanner
 

@@ -1,6 +1,6 @@
 # name: test/sql/storage/attach_debug_print_unharmful.test
 # description: set sqlite_debug_show_queries setting to true, make sure a sample query still runs properly
-# group: [sqlite_storage]
+# group: [storage]
 
 require sqlite_scanner
 

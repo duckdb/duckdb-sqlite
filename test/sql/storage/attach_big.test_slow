@@ -1,6 +1,6 @@
 # name: test/sql/storage/attach_big.test_slow
-# description:
-# group: [sqlite_storage]
+# description: 
+# group: [storage]
 
 require sqlite_scanner
 

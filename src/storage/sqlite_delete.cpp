@@ -63,12 +63,14 @@ SinkResultType SQLiteDelete::Sink(ExecutionContext &context, DataChunk &chunk, O
 //===--------------------------------------------------------------------===//
 // GetData
 //===--------------------------------------------------------------------===//
-SourceResultType SQLiteDelete::GetDataInternal(ExecutionContext &context, DataChunk &chunk, OperatorSourceInput &input) const {
+SourceResultType SQLiteDelete::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
+                                               OperatorSourceInput &input) const {
 	auto &insert_gstate = sink_state->Cast<SQLiteDeleteGlobalState>();
 	if (!insert_gstate.delete_done) {
 		if (!insert_gstate.statement.IsOpen()) {
 			auto &transaction = SQLiteTransaction::Get(context.client, insert_gstate.table.catalog);
-			insert_gstate.statement = transaction.GetDB().Prepare(GetDeleteSQL(insert_gstate.table.name.GetIdentifierName()));
+			insert_gstate.statement =
+			    transaction.GetDB().Prepare(GetDeleteSQL(insert_gstate.table.name.GetIdentifierName()));
 		}
 		for (auto row_id : insert_gstate.rowids) {
 			insert_gstate.statement.Bind<int64_t>(0, row_id);

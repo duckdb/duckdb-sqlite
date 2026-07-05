@@ -1,6 +1,6 @@
-# name:
-# description:
-# group: [sqlite_scanner]
+# name: test/sql/scanner/longvarchar.test
+# description: 
+# group: [scanner]
 
 require sqlite_scanner
 

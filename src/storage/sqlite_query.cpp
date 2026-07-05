@@ -55,15 +55,15 @@ static unique_ptr<FunctionData> SQLiteQueryBind(ClientContext &context, TableFun
 		params = StructValue::GetChildren(struct_val);
 		for (idx_t i = 0; i < params.size(); i++) {
 			const Value &param = params[i];
-			switch(param.type().id()) {
-				case LogicalTypeId::BIGINT:
-				case LogicalTypeId::DOUBLE:
-				case LogicalTypeId::BLOB:
-				case LogicalTypeId::VARCHAR:
-					break;
-				default:
-					if (!param.IsNull()) {
-						throw BinderException("Unsupported parameter type \"%s\", index: %zu", param.type().ToString(), i);
+			switch (param.type().id()) {
+			case LogicalTypeId::BIGINT:
+			case LogicalTypeId::DOUBLE:
+			case LogicalTypeId::BLOB:
+			case LogicalTypeId::VARCHAR:
+				break;
+			default:
+				if (!param.IsNull()) {
+					throw BinderException("Unsupported parameter type \"%s\", index: %zu", param.type().ToString(), i);
 				}
 			}
 		}

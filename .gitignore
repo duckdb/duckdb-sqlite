@@ -4,6 +4,5 @@ build
 cmake-build-debug
 sqlite/build
 tpch.db
-.clang-format
 *.tbl
 duckdb_unittest_tempdir/

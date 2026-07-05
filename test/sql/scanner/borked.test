@@ -1,6 +1,6 @@
 # name: test/sql/scanner/borked.test
 # description: Test with borked database
-# group: [sqlite_scanner]
+# group: [scanner]
 
 require sqlite_scanner
 

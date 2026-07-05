@@ -1,6 +1,6 @@
 # name: test/sql/storage/issue53.test
 # description: Test issue #53 - BOOLEAN data type is not supported
-# group: [sqlite_scanner]
+# group: [storage]
 
 require sqlite_scanner
 

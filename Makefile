@@ -21,3 +21,9 @@ test_release: data/db/tpch.db
 test_debug: data/db/tpch.db
 
 test_reldebug: data/db/tpch.db
+
+format-check:
+	$(MAKE) -C duckdb format-check T="--workdir $$PWD --directories src/include src/storage test"
+
+format-fix:
+	$(MAKE) -C duckdb format-fix T="--workdir $$PWD --directories src/include src/storage test"
