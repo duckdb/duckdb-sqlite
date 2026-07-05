@@ -1,6 +1,6 @@
 # name: test/sql/scanner/tpch.test
 # description: test tpch database
-# group: [sqlite_scanner]
+# group: [scanner]
 
 require sqlite_scanner
 

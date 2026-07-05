@@ -197,7 +197,8 @@ void SQLiteSchemaEntry::AlterTable(SQLiteTransaction &sqlite_transaction, Rename
 
 void SQLiteSchemaEntry::AlterTable(SQLiteTransaction &sqlite_transaction, AddColumnInfo &info) {
 	if (info.if_column_not_exists) {
-		if (sqlite_transaction.GetDB().ColumnExists(info.GetQualifiedName().Name().GetIdentifierName(), info.new_column.GetName().GetIdentifierName())) {
+		if (sqlite_transaction.GetDB().ColumnExists(info.GetQualifiedName().Name().GetIdentifierName(),
+		                                            info.new_column.GetName().GetIdentifierName())) {
 			return;
 		}
 	}
@@ -212,7 +213,8 @@ void SQLiteSchemaEntry::AlterTable(SQLiteTransaction &sqlite_transaction, AddCol
 
 void SQLiteSchemaEntry::AlterTable(SQLiteTransaction &sqlite_transaction, RemoveColumnInfo &info) {
 	if (info.if_column_exists) {
-		if (!sqlite_transaction.GetDB().ColumnExists(info.GetQualifiedName().Name().GetIdentifierName(), info.removed_column.GetIdentifierName())) {
+		if (!sqlite_transaction.GetDB().ColumnExists(info.GetQualifiedName().Name().GetIdentifierName(),
+		                                             info.removed_column.GetIdentifierName())) {
 			return;
 		}
 	}

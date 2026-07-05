@@ -1,6 +1,6 @@
 # name: test/sql/scanner/mixed_numeric.test
 # description: Test mixed type numeric columns
-# group: [sqlite_scanner]
+# group: [scanner]
 
 require sqlite_scanner
 

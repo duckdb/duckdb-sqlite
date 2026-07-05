@@ -1,6 +1,6 @@
 # name: test/sql/scanner/sakila.test
 # description: Test sakila database
-# group: [sqlite_scanner]
+# group: [scanner]
 
 require sqlite_scanner
 

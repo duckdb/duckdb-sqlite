@@ -1,6 +1,6 @@
 # name: test/sql/storage/issue47.test
 # description: Test issue #47 - Mismatch type error despite sqlite_all_Varchar
-# group: [sqlite_scanner]
+# group: [storage]
 
 require sqlite_scanner
 

@@ -1,6 +1,6 @@
-# name: test/sql/scanner/sakila.test
+# name: test/sql/storage/attach_sakila.test
 # description: Test sakila database
-# group: [sqlite_scanner]
+# group: [storage]
 
 require sqlite_scanner
 

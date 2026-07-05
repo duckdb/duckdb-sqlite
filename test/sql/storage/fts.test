@@ -1,6 +1,6 @@
 # name: test/sql/storage/fts.test
 # description: Test loading an FTS table
-# group: [sqlite_scanner]
+# group: [storage]
 
 require sqlite_scanner
 

@@ -6,8 +6,34 @@ on:
   merge_group:
 
 jobs:
+
+  format-check:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: 'true'
+
+      - name: Install
+        run: |
+          pip3 install           \
+            black==25.1.0        \
+            clang_format==11.0.1 \
+            cmake-format==0.6.13
+
+      - name: Format Check
+        run: |
+          python -m pip show black
+          python -m pip show cmake_format
+          python -m pip show clang_format
+          clang-format --version
+          clang-format --dump-config
+          make format-check
+
   linux:
     name: Linux (amd64)
+    needs: format-check
     runs-on: ubuntu-latest
     env:
       GEN: ninja

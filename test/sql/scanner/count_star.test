@@ -1,6 +1,6 @@
 # name: test/sql/scanner/count_star.test
 # description: Test count star
-# group: [sqlite_scanner]
+# group: [scanner]
 
 require sqlite_scanner
 

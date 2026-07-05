@@ -50,7 +50,8 @@ TableFunction SQLiteTableEntry::GetScanFunction(ClientContext &context, unique_p
 		disable_multithreaded_scans = BooleanValue::Get(disable_multithreaded_scans_val);
 	}
 
-	bool use_global_db = !transaction.IsReadOnly() || sqlite_catalog.InMemory() || threads <= 1 || disable_multithreaded_scans;
+	bool use_global_db =
+	    !transaction.IsReadOnly() || sqlite_catalog.InMemory() || threads <= 1 || disable_multithreaded_scans;
 
 	if (use_global_db) {
 		// for in-memory databases or if we have transaction-local changes we can
