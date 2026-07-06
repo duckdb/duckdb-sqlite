@@ -56,7 +56,7 @@ static unique_ptr<FunctionData> SqliteBind(ClientContext &context, TableFunction
 	SQLiteStatement stmt;
 	SQLiteOpenOptions options;
 	options.access_mode = AccessMode::READ_ONLY;
-	db = SQLiteDB::Open(result->file_name, options);
+	db = SQLiteDB::Open(result->file_name, options, context);
 
 	ColumnList columns;
 	vector<unique_ptr<Constraint>> constraints;
@@ -121,7 +121,7 @@ static void SqliteInitInternal(ClientContext &context, const SqliteBindData &bin
 	if (!local_state.db) {
 		SQLiteOpenOptions options;
 		options.access_mode = AccessMode::READ_ONLY;
-		local_state.owned_db = SQLiteDB::Open(bind_data.file_name.c_str(), options);
+		local_state.owned_db = SQLiteDB::Open(bind_data.file_name.c_str(), options, context);
 		local_state.db = &local_state.owned_db;
 	}
 	string sql = SqliteGetScanSQL(bind_data, local_state.column_ids);
@@ -414,7 +414,7 @@ static void AttachFunction(ClientContext &context, TableFunctionInput &data_p, D
 
 	SQLiteOpenOptions options;
 	options.access_mode = AccessMode::READ_ONLY;
-	SQLiteDB db = SQLiteDB::Open(data.file_name, options);
+	SQLiteDB db = SQLiteDB::Open(data.file_name, options, context);
 	auto dconn = Connection(context.db->GetDatabase(context));
 	{
 		auto tables = db.GetTables();

@@ -1,0 +1,27 @@
+# name: test/sql/scanner/http_sqlite_07_consistency.test
+# description: Consistency check for multiple scans
+# group: [scanner]
+
+require sqlite_scanner
+
+require httpfs
+
+require-env SQLITE_HTTP_TEST_URL
+
+# Consistency check - multiple scans return same results
+query IIIT
+WITH counts AS (
+    SELECT 'scan1' as scan_id, COUNT(*) as count FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/sakila.db', 'film')
+    UNION ALL
+    SELECT 'scan2', COUNT(*) FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/sakila.db', 'film')
+    UNION ALL
+    SELECT 'scan3', COUNT(*) FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/sakila.db', 'film')
+)
+SELECT 
+    COUNT(*) as scan_count,
+    MIN(count) as min_count,
+    MAX(count) as max_count,
+    CASE WHEN MIN(count) = MAX(count) THEN 'CONSISTENT' ELSE 'INCONSISTENT' END as consistency
+FROM counts;
+----
+3	1000	1000	CONSISTENT

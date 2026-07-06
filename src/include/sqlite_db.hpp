@@ -14,6 +14,7 @@
 namespace duckdb {
 class SQLiteStatement;
 struct IndexInfo;
+class ClientContext;
 
 class SQLiteDB {
 public:
@@ -30,7 +31,13 @@ public:
 	sqlite3 *db;
 
 public:
+	//! Open a SQLite database (local files only)
 	static SQLiteDB Open(const string &path, const SQLiteOpenOptions &options, bool is_shared = false);
+	//! Open a SQLite database, routing paths DuckDB's FileSystem owns (remote, WASM) through the VFS
+	//! and plain local files through native SQLite
+	//! @param context Required for opening through DuckDB's FileSystem VFS
+	static SQLiteDB Open(const string &path, const SQLiteOpenOptions &options, ClientContext &context,
+	                     bool is_shared = false);
 	bool TryPrepare(const string &query, SQLiteStatement &result);
 	SQLiteStatement Prepare(const string &query);
 	void Execute(const string &query);
@@ -53,6 +60,16 @@ public:
 
 	bool IsOpen();
 	void Close();
+
+private:
+	static int GetOpenFlags(const SQLiteOpenOptions &options, bool is_shared, bool force_read_only = false);
+	static void ApplyBusyTimeout(sqlite3 *db, const SQLiteOpenOptions &options);
+	static void HandleOpenError(const string &path, int rc, ClientContext *context = nullptr);
+	//! Open read-only through DuckDB's FileSystem (the caching VFS)
+	static SQLiteDB OpenWithVFS(const string &path, const SQLiteOpenOptions &options, ClientContext &context,
+	                            bool is_shared);
+	//! Open a plain local SQLite database file through native SQLite
+	static SQLiteDB OpenLocal(const string &path, const SQLiteOpenOptions &options, bool is_shared = false);
 };
 
 } // namespace duckdb

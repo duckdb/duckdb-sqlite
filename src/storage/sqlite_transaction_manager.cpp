@@ -19,16 +19,31 @@ Transaction &SQLiteTransactionManager::StartTransaction(ClientContext &context) 
 ErrorData SQLiteTransactionManager::CommitTransaction(ClientContext &context, Transaction &transaction) {
 	auto &sqlite_transaction = transaction.Cast<SQLiteTransaction>();
 	sqlite_transaction.Commit();
-	lock_guard<mutex> l(transaction_lock);
-	transactions.erase(transaction);
+	ExtractAndCloseAfterUnlock(transaction);
 	return ErrorData();
 }
 
 void SQLiteTransactionManager::RollbackTransaction(Transaction &transaction) {
 	auto &sqlite_transaction = transaction.Cast<SQLiteTransaction>();
 	sqlite_transaction.Rollback();
-	lock_guard<mutex> l(transaction_lock);
-	transactions.erase(transaction);
+	ExtractAndCloseAfterUnlock(transaction);
+}
+
+void SQLiteTransactionManager::ExtractAndCloseAfterUnlock(Transaction &transaction) {
+	// Destroy the SQLite connection with transaction_lock released: ~SQLiteTransaction -> sqlite3_close_v2
+	// runs connection teardown that can re-enter paths taking transaction_lock, so holding it across the
+	// close risks a lock-order inversion. Extract the transaction under the lock; let the moved-out
+	// unique_ptr destruct after the lock is dropped.
+	unique_ptr<SQLiteTransaction> to_close;
+	{
+		lock_guard<mutex> l(transaction_lock);
+		auto entry = transactions.find(transaction);
+		if (entry == transactions.end()) {
+			return;
+		}
+		to_close = std::move(entry->second);
+		transactions.erase(entry);
+	}
 }
 
 void SQLiteTransactionManager::Checkpoint(ClientContext &context, bool force) {
