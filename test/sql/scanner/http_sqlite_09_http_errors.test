@@ -1,0 +1,49 @@
+# name: test/sql/scanner/http_sqlite_09_http_errors.test
+# description: HTTP status code mapping to SQLite errors (hermetic, via local test server)
+# group: [scanner]
+
+# The local test server (scripts/sqlite_http_test_server.py) exposes /status/<code> endpoints that
+# return the given HTTP status, so the status -> SQLite error mapping is asserted deterministically
+# without a live third-party service. httpfs surfaces only some statuses to the scanner: 404 and 429
+# arrive with their code (mapped to SQLITE_CANTOPEN / SQLITE_BUSY), while 403/401/5xx are collapsed to
+# "HTTP 0" inside httpfs and fall through to the caller's default error. The cases below assert that.
+
+require sqlite_scanner
+
+require httpfs
+
+require-env SQLITE_HTTP_TEST_URL
+
+# 429 Too Many Requests is distinctly mapped to SQLITE_BUSY -> "database is locked".
+statement error
+SELECT * FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/status/429', 'test');
+----
+database is locked
+
+# 404 / 403 / 401 / 500 all fail to open; httpfs does not distinguish them at the scanner
+# boundary, so they collapse to the generic SQLITE_CANTOPEN -> "unable to open database file".
+statement error
+SELECT * FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/status/404', 'test');
+----
+unable to open database file
+
+# The terse SQLite code is enriched with the underlying httpfs error (status + URL), not discarded.
+statement error
+SELECT * FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/status/404', 'test');
+----
+HTTP Error
+
+statement error
+SELECT * FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/status/403', 'test');
+----
+unable to open database file
+
+statement error
+SELECT * FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/status/401', 'test');
+----
+unable to open database file
+
+statement error
+SELECT * FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/status/500', 'test');
+----
+unable to open database file

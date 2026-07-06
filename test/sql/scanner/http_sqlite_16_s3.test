@@ -1,0 +1,38 @@
+# name: test/sql/scanner/http_sqlite_16_s3.test
+# description: Remote SQLite over s3:// (rclone serve s3) - scan + credentialed -wal sidecar guard
+# group: [scanner]
+
+require sqlite_scanner
+
+require httpfs
+
+# Set only by the wrapper's --server rclone-s3 mode (an rclone serve s3 endpoint + the "db" bucket).
+require-env SQLITE_S3_TEST_ENDPOINT
+
+require-env SQLITE_S3_TEST_URL
+
+# Credentials must match the wrapper's rclone --auth-key (S3_KEY/S3_SECRET in sqlite_http_test_server.py).
+statement ok
+CREATE SECRET (TYPE s3, KEY_ID 'testkey', SECRET 'testsecret', ENDPOINT '{SQLITE_S3_TEST_ENDPOINT}', URL_STYLE 'path', USE_SSL false, REGION 'us-east-1');
+
+# A remote scan over s3:// routes through the VFS and the S3FileSystem transport, distinct from the
+# http:// path.
+query I
+SELECT count(*) FROM sqlite_scan('{SQLITE_S3_TEST_URL}/sakila.db', 'category');
+----
+16
+
+# The credentialed sidecar path: a checkpointed WAL-mode DB's "-wal" probe is re-signed with the same
+# S3 credentials as the main object (BuildSidecarUrl + httpfs signing). Its "-wal" is absent (404), so
+# the guard passes and the main file reads - exercising sidecar authentication over S3.
+query I
+SELECT count(*) FROM sqlite_scan('{SQLITE_S3_TEST_URL}/wal_checkpointed.db', 't');
+----
+200
+
+# And a populated "-wal" over s3:// is still rejected: the credentialed sidecar probe reaches a sidecar
+# that holds frames, so the WAL guard fails closed.
+statement error
+SELECT * FROM sqlite_scan('{SQLITE_S3_TEST_URL}/wal_mode_snapshot.db', 't');
+----
+WAL mode

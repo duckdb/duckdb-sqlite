@@ -1,0 +1,48 @@
+# name: test/sql/scanner/http_sqlite_00_vfs_registration.test
+# description: HTTP VFS registration and URL-scheme handling for the SQLite scanner
+# group: [scanner]
+
+require sqlite_scanner
+
+require httpfs
+
+require-env SQLITE_HTTP_TEST_URL
+
+# The custom VFS is registered and a valid remote SQLite database opens through it.
+query I
+SELECT COUNT(*) FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/sakila.db', 'category');
+----
+16
+
+# A reachable URL whose body is not a SQLite database errors cleanly (no crash).
+statement error
+SELECT * FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/not_a_database.txt', 'test');
+----
+file is not a database
+
+# A 404 on a remote path surfaces as a clean open failure.
+statement error
+SELECT * FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/status/404', 'test');
+----
+unable to open database file
+
+# S3 URLs are recognized and routed through httpfs; without credentials/region this surfaces
+# as a permission error rather than a generic open failure (confirms the scheme is handled).
+statement error
+SELECT * FROM sqlite_scan('s3://bucket/test.db', 'test');
+----
+access permission denied
+
+# A bare nonexistent local path resolves through native local file handling, not the VFS.
+statement error
+SELECT * FROM sqlite_scan('nonexistent.db', 'test');
+----
+unable to open database file
+
+# A long URL (>512 chars) must still open. SQLite's default VFS caps pathnames at 512; presigned
+# S3/GCS/Azure URLs routinely exceed that, so the VFS sets mxPathname for URLs. The padded query
+# string pushes this URL past 512 while still resolving to the sakila fixture.
+query I
+SELECT COUNT(*) FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/sakila.db?pad=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', 'category');
+----
+16

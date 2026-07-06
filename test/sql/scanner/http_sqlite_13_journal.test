@@ -1,0 +1,40 @@
+# name: test/sql/scanner/http_sqlite_13_journal.test
+# description: Rollback-journal remote databases - reject any non-zeroed -journal header, allow a clean/zeroed one
+# group: [scanner]
+
+require sqlite_scanner
+
+require httpfs
+
+require-env SQLITE_HTTP_TEST_URL
+
+# A rollback-mode database whose "-journal" sidecar is hot (intact magic, first byte 0xd9) from an
+# interrupted write. This VFS serves only the main file under SQLITE_IOCAP_IMMUTABLE, so SQLite would
+# skip hot-journal recovery and read an inconsistent snapshot - reject loudly instead.
+statement error
+SELECT * FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/hot_journal.db', 't');
+----
+hot rollback journal
+
+# A "-journal" whose header's first byte is nonzero but is NOT the SQLite magic (a corrupt/partial
+# leftover). The guard keys off the first byte (matching SQLite's hasHotJournal), not the exact magic,
+# so this is treated as potentially-hot and rejected rather than served as clean.
+statement error
+SELECT * FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/partial_journal.db', 't');
+----
+hot rollback journal
+
+# A leftover "-journal" with a ZEROED header (a clean commit, or PERSIST journal_mode) is not hot: its
+# first byte is 0. The guard reads the first header byte, so this cleanly-closed database is served.
+query I
+SELECT count(*) FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/clean_journal.db', 't');
+----
+3
+
+# Fail closed when the "-journal" state is UNVERIFIABLE (non-404), same as the WAL guard. clean_journal
+# would PASS with a 404 sidecar, so /walerr/503/ (forcing 503 on the -journal probe) is what uniquely
+# drives the rejection here - isolating the fail-closed path from content-based rejection.
+statement error
+SELECT * FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/walerr/503/clean_journal.db', 't');
+----
+Cannot verify

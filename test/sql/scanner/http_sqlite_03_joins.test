@@ -1,0 +1,23 @@
+# name: test/sql/scanner/http_sqlite_03_joins.test
+# description: Joins between remote SQLite tables
+# group: [scanner]
+
+require sqlite_scanner
+
+require httpfs
+
+require-env SQLITE_HTTP_TEST_URL
+
+# Join between remote tables
+query TI
+SELECT c.name as Category, COUNT(*) as FilmCount
+FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/sakila.db', 'category') c
+JOIN sqlite_scan('{SQLITE_HTTP_TEST_URL}/sakila.db', 'film_category') fc
+ON c.category_id = fc.category_id
+GROUP BY c.name
+ORDER BY FilmCount DESC, c.name
+LIMIT 3;
+----
+Sports	74
+Foreign	73
+Family	69

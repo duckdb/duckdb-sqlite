@@ -26,6 +26,8 @@ public:
 	void Checkpoint(ClientContext &context, bool force = false) override;
 
 private:
+	void ExtractAndCloseAfterUnlock(Transaction &transaction);
+
 	SQLiteCatalog &sqlite_catalog;
 	mutex transaction_lock;
 	reference_map_t<Transaction, unique_ptr<SQLiteTransaction>> transactions;

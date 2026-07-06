@@ -1,0 +1,49 @@
+# name: test/sql/scanner/http_sqlite_15_concurrent_lifecycle.test
+# description: Concurrent register/open/scan/teardown across many contexts - stresses the VFS registry under load
+# group: [scanner]
+
+require sqlite_scanner
+
+require httpfs
+
+require-env SQLITE_HTTP_TEST_URL
+
+# Robust-server marker: set only by the wrapper's --server rclone-http mode. The stdlib test server
+# drops connections under this concurrency, so this test runs only against rclone serve http; without
+# the marker it skips.
+require-env SQLITE_HTTP_ROBUST
+
+# Bound per-scan parallelism so the load is concurrent-contexts-dominated (what stresses the registry)
+# rather than a thundering herd of range requests; 16 contexts x a few threads is plenty.
+statement ok
+SET threads TO 4;
+
+# Each concurrentloop iteration runs on its own Connection (its own ClientContext), so this drives many
+# contexts concurrently through the full VFS lifecycle: lazy Register() of the per-context wrapper,
+# parallel-scan Open()s, Read()s, and connection teardown -> OnConnectionClosed -> Unregister() with the
+# shared retired-vector reap. It contends the global VFSRegistryData (registry_mutex, the retired
+# vector, ReapIdleRetiredWrappers, the open-handle refcount) from many threads at once, where a data
+# race or use-after-free in the retire-then-reap machinery would surface.
+
+concurrentloop i 0 16
+
+# sqlite_scan path: registers the VFS on this context, opens + (parallel-)scans, unregisters at teardown.
+query I
+SELECT count(*) FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/sakila.db', 'category');
+----
+16
+
+# ATTACH path: exercises the deferred remote-open (connection + BEGIN on first GetDB()) concurrently,
+# with a per-iteration name so the threads do not collide.
+statement ok
+ATTACH '{SQLITE_HTTP_TEST_URL}/sakila.db' AS ck_{i} (TYPE sqlite, READ_ONLY);
+
+query I
+SELECT count(*) FROM sqlite_query('ck_{i}', 'SELECT category_id FROM category');
+----
+16
+
+statement ok
+DETACH ck_{i};
+
+endloop

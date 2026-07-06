@@ -1,0 +1,48 @@
+# name: test/sql/scanner/http_sqlite_04_attach.test
+# description: ATTACH remote SQLite database
+# group: [scanner]
+
+require sqlite_scanner
+
+require httpfs
+
+require-env SQLITE_HTTP_TEST_URL
+
+# Attach remote database
+statement ok
+ATTACH '{SQLITE_HTTP_TEST_URL}/sakila.db' AS http_db (TYPE sqlite);
+
+# Query attached database
+query I
+SELECT COUNT(*) FROM http_db.film;
+----
+1000
+
+# Verify actual column values round-trip correctly, not just row counts
+query ITI
+SELECT film_id, title, length FROM http_db.film WHERE film_id = 1;
+----
+1	ACADEMY DINOSAUR	86
+
+# Remote databases are read-only - writes must be rejected, not silently dropped
+statement error
+CREATE TABLE http_db.t(i INTEGER);
+----
+read-only mode
+
+statement error
+INSERT INTO http_db.category VALUES (9999, 'x', NULL);
+----
+read-only mode
+
+statement ok
+DETACH http_db;
+
+# ATTACH then DETACH with no query in between. The remote connection and BEGIN are deferred
+# to the first GetDB(), so this exercises transaction teardown when the transaction never started
+# (Commit/Rollback must not dereference a connection that was never opened).
+statement ok
+ATTACH '{SQLITE_HTTP_TEST_URL}/sakila.db' AS http_db_unused (TYPE sqlite);
+
+statement ok
+DETACH http_db_unused;

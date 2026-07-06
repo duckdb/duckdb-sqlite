@@ -1,0 +1,26 @@
+# name: test/sql/scanner/http_sqlite_01_basic_scan.test
+# description: Basic HTTP SQLite scan functionality
+# group: [scanner]
+
+require sqlite_scanner
+
+require httpfs
+
+require-env SQLITE_HTTP_TEST_URL
+
+# Basic remote SQLite query
+query I
+SELECT COUNT(*) FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/sakila.db', 'category');
+----
+16
+
+# Query with WHERE clause and ORDER BY
+query IT
+SELECT category_id, name FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/sakila.db', 'category')
+WHERE name LIKE 'C%'
+ORDER BY name
+LIMIT 3;
+----
+3	Children
+4	Classics
+5	Comedy
