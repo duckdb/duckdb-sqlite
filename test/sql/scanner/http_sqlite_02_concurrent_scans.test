@@ -1,6 +1,6 @@
 # name: test/sql/scanner/http_sqlite_02_concurrent_scans.test
 # description: Multiple concurrent scans of remote SQLite database
-# group: [sqlite_scanner]
+# group: [scanner]
 
 require sqlite_scanner
 

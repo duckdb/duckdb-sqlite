@@ -1,6 +1,6 @@
 # name: test/sql/scanner/http_sqlite_12_wal.test
 # description: WAL-mode remote databases - reject a populated -wal sidecar, fail closed on an unverifiable one, allow a checkpointed file
-# group: [sqlite_scanner]
+# group: [scanner]
 
 require sqlite_scanner
 

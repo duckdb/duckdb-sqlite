@@ -1,6 +1,6 @@
 # name: test/sql/scanner/http_sqlite_13_journal.test
 # description: Rollback-journal remote databases - reject any non-zeroed -journal header, allow a clean/zeroed one
-# group: [sqlite_scanner]
+# group: [scanner]
 
 require sqlite_scanner
 

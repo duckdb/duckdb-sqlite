@@ -1,6 +1,6 @@
 # name: test/sql/scanner/http_sqlite_04_attach.test
 # description: ATTACH remote SQLite database
-# group: [sqlite_scanner]
+# group: [scanner]
 
 require sqlite_scanner
 

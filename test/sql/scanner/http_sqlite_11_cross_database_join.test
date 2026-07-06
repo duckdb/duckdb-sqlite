@@ -1,6 +1,6 @@
 # name: test/sql/scanner/http_sqlite_11_cross_database_join.test
 # description: Join across two attached remote SQLite databases; multi-handle VFS teardown with an open transaction
-# group: [sqlite_scanner]
+# group: [scanner]
 
 require sqlite_scanner
 

@@ -1,6 +1,6 @@
 # name: test/sql/scanner/http_sqlite_00_vfs_registration.test
 # description: HTTP VFS registration and URL-scheme handling for the SQLite scanner
-# group: [sqlite_scanner]
+# group: [scanner]
 
 require sqlite_scanner
 

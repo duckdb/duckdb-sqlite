@@ -1,6 +1,6 @@
 # name: test/sql/scanner/http_sqlite_01_basic_scan.test
 # description: Basic HTTP SQLite scan functionality
-# group: [sqlite_scanner]
+# group: [scanner]
 
 require sqlite_scanner
 

@@ -1,6 +1,6 @@
 # name: test/sql/scanner/http_sqlite_10_attach_active_txn.test
 # description: Connection torn down with an open transaction on a remote ATTACH must not use-after-free the VFS
-# group: [sqlite_scanner]
+# group: [scanner]
 
 require sqlite_scanner
 

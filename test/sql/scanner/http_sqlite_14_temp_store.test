@@ -1,6 +1,6 @@
 # name: test/sql/scanner/http_sqlite_14_temp_store.test
 # description: VFS-backed connections keep SQLite temp storage in memory (no temp open through the read-only VFS)
-# group: [sqlite_scanner]
+# group: [scanner]
 
 require sqlite_scanner
 

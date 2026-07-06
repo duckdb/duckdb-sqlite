@@ -1,6 +1,6 @@
 # name: test/sql/scanner/http_sqlite_09_http_errors.test
 # description: HTTP status code mapping to SQLite errors (hermetic, via local test server)
-# group: [sqlite_scanner]
+# group: [scanner]
 
 # The local test server (scripts/sqlite_http_test_server.py) exposes /status/<code> endpoints that
 # return the given HTTP status, so the status -> SQLite error mapping is asserted deterministically

@@ -1,6 +1,6 @@
 # name: test/sql/scanner/http_sqlite_16_s3.test
 # description: Remote SQLite over s3:// (rclone serve s3) - scan + credentialed -wal sidecar guard
-# group: [sqlite_scanner]
+# group: [scanner]
 
 require sqlite_scanner
 

@@ -1,6 +1,6 @@
 # name: test/sql/scanner/http_sqlite_05_complex_queries.test
 # description: Complex queries on attached remote SQLite database
-# group: [sqlite_scanner]
+# group: [scanner]
 
 require sqlite_scanner
 

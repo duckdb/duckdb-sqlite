@@ -1,6 +1,6 @@
 # name: test/sql/scanner/http_sqlite_03_joins.test
 # description: Joins between remote SQLite tables
-# group: [sqlite_scanner]
+# group: [scanner]
 
 require sqlite_scanner
 
