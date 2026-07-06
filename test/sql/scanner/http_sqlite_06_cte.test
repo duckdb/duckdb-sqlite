@@ -1,0 +1,25 @@
+# name: test/sql/scanner/http_sqlite_06_cte.test
+# description: CTE with remote SQLite tables
+# group: [scanner]
+
+require sqlite_scanner
+
+require httpfs
+
+require-env SQLITE_HTTP_TEST_URL
+
+# CTE with remote tables
+query TI
+WITH top_categories AS (
+    SELECT c.category_id, c.name, COUNT(*) as film_count
+    FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/sakila.db', 'category') c
+    JOIN sqlite_scan('{SQLITE_HTTP_TEST_URL}/sakila.db', 'film_category') fc ON c.category_id = fc.category_id
+    GROUP BY c.category_id, c.name
+    ORDER BY film_count DESC
+    LIMIT 3
+)
+SELECT name, film_count FROM top_categories ORDER BY name;
+----
+Family	69
+Foreign	73
+Sports	74

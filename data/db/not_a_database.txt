@@ -1,0 +1,1 @@
+This is not a SQLite database. Used by http_sqlite error-handling tests.

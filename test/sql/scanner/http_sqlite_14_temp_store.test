@@ -1,0 +1,27 @@
+# name: test/sql/scanner/http_sqlite_14_temp_store.test
+# description: VFS-backed connections keep SQLite temp storage in memory (no temp open through the read-only VFS)
+# group: [scanner]
+
+require sqlite_scanner
+
+require httpfs
+
+require-env SQLITE_HTTP_TEST_URL
+
+statement ok
+ATTACH '{SQLITE_HTTP_TEST_URL}/sakila.db' AS ck (TYPE sqlite, READ_ONLY);
+
+# temp_store == 2 (MEMORY): SQLite-side sorter/materialization spills stay in memory rather than being
+# opened as a temp file through this read-only VFS (whose nameless temp xOpen fails "unable to open
+# database file").
+query I
+SELECT * FROM sqlite_query('ck', 'PRAGMA temp_store');
+----
+2
+
+# A SQLite-side ORDER BY in sqlite_query (not DuckDB) over the remote database completes. (temp_store
+# is asserted above; that is what keeps a larger sort's spill off the read-only VFS, not this query.)
+query I
+SELECT count(*) FROM sqlite_query('ck', 'SELECT payment_id FROM payment ORDER BY amount, payment_date, payment_id');
+----
+16049

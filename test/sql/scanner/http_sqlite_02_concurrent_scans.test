@@ -1,0 +1,39 @@
+# name: test/sql/scanner/http_sqlite_02_concurrent_scans.test
+# description: Multiple concurrent scans of remote SQLite database
+# group: [scanner]
+
+require sqlite_scanner
+
+require httpfs
+
+require-env SQLITE_HTTP_TEST_URL
+
+# These concurrent scans need a robust HTTP server: they open several remote connections at once, which
+# the stdlib test server does not serve reliably. Runs under the rclone-backed server (which sets this).
+require-env SQLITE_HTTP_ROBUST
+
+statement ok
+SET threads=4;
+
+# A parallel sqlite_scan opens a separate remote connection per row-group slice, so this exercises
+# multi-threaded scanning through the per-context VFS and its shared external file cache (after the
+# first block fetch, reads are served from cache). The result must stay correct under parallelism.
+query I
+SELECT COUNT(*) FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/sakila.db', 'film');
+----
+1000
+
+# Aggregation over a parallel scan
+query I
+SELECT SUM(length) FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/sakila.db', 'film');
+----
+115272
+
+# Multiple concurrent scans of different tables in a single query
+query III
+SELECT
+    (SELECT COUNT(*) FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/sakila.db', 'category')) as categories,
+    (SELECT COUNT(*) FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/sakila.db', 'language')) as languages,
+    (SELECT COUNT(*) FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/sakila.db', 'film')) as films;
+----
+16	6	1000

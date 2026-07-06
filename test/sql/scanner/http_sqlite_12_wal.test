@@ -1,0 +1,32 @@
+# name: test/sql/scanner/http_sqlite_12_wal.test
+# description: WAL-mode remote databases - reject a populated -wal sidecar, fail closed on an unverifiable one, allow a checkpointed file
+# group: [scanner]
+
+require sqlite_scanner
+
+require httpfs
+
+require-env SQLITE_HTTP_TEST_URL
+
+# A WAL-mode database whose -wal sidecar still holds frames: this VFS serves only the main file, so the
+# open is rejected loudly instead of returning the stale last-checkpointed snapshot.
+statement error
+SELECT * FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/wal_mode_snapshot.db', 't');
+----
+WAL mode
+
+# A WAL-mode database that has been checkpointed has no populated -wal, so the main file is complete and
+# reads correctly - the guard must not reject it. (Its -wal probe 404s: the one confirmed-absent case.)
+query I
+SELECT count(*) FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/wal_checkpointed.db', 't');
+----
+200
+
+# Fail closed when the sidecar's state is UNVERIFIABLE rather than confirmed-absent. wal_checkpointed
+# would PASS with a 404 -wal, so /walerr/503/ (forcing 503 on the -wal probe; mimics a 403 on a bare
+# presigned URL or a transient 5xx) is what uniquely drives the rejection - isolating the fail-closed
+# path. The guard must not assume "checkpointed-complete" and serve a stale snapshot. Only 404 passes.
+statement error
+SELECT * FROM sqlite_scan('{SQLITE_HTTP_TEST_URL}/walerr/503/wal_checkpointed.db', 't');
+----
+Cannot verify

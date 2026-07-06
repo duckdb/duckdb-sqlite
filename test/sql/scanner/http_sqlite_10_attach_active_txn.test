@@ -1,0 +1,28 @@
+# name: test/sql/scanner/http_sqlite_10_attach_active_txn.test
+# description: Connection torn down with an open transaction on a remote ATTACH must not use-after-free the VFS
+# group: [scanner]
+
+require sqlite_scanner
+
+require httpfs
+
+require-env SQLITE_HTTP_TEST_URL
+
+statement ok
+ATTACH '{SQLITE_HTTP_TEST_URL}/sakila.db' AS http_db (TYPE sqlite);
+
+# Open an explicit (non-autocommit) transaction so the remote SQLite connection stays open past
+# the end of the test. At teardown DuckDB fires OnConnectionClosed (which unregisters the VFS)
+# BEFORE rolling back the transaction (which closes the remote sqlite3 handle). Without refcounted
+# VFS retirement the subsequent sqlite3_close runs xClose through freed io_methods -> use-after-free.
+statement ok
+BEGIN TRANSACTION;
+
+# Force the remote connection + handle to actually open inside the transaction.
+query I
+SELECT COUNT(*) FROM http_db.film;
+----
+1000
+
+# No COMMIT/ROLLBACK/DETACH: leave the transaction active so the connection is destroyed with the
+# remote handle still open, exercising the refcounted VFS retirement on the teardown path.

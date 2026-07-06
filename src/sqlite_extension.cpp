@@ -4,6 +4,7 @@
 #include "duckdb.hpp"
 
 #include "sqlite_db.hpp"
+#include "sqlite_duckdb_vfs_cache.hpp"
 #include "sqlite_scanner.hpp"
 #include "sqlite_storage.hpp"
 #include "sqlite_scanner_extension.hpp"
@@ -11,6 +12,7 @@
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
+#include "duckdb/planner/extension_callback.hpp"
 
 using namespace duckdb;
 
@@ -19,6 +21,15 @@ extern "C" {
 static void SetSqliteDebugQueryPrint(ClientContext &context, SetScope scope, Value &parameter) {
 	SQLiteDB::DebugSetPrintQueries(BooleanValue::Get(parameter));
 }
+
+// Unregisters this connection's remote VFS (registered lazily on the first remote open) when
+// the connection closes, so the per-context wrapper does not outlive its ClientContext.
+class SQLiteVFSCleanupCallback : public ExtensionCallback {
+public:
+	void OnConnectionClosed(ClientContext &context) override {
+		SQLiteDuckDBCacheVFS::Unregister(context);
+	}
+};
 
 static void LoadInternal(ExtensionLoader &loader) {
 	SqliteScanFunction sqlite_fun;
@@ -41,6 +52,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	                          LogicalType::BOOLEAN, Value::BOOLEAN(false));
 
 	StorageExtension::Register(config, "sqlite_scanner", make_shared_ptr<SQLiteStorageExtension>());
+	ExtensionCallback::Register(config, make_shared_ptr<SQLiteVFSCleanupCallback>());
 }
 
 void SqliteScannerExtension::Load(ExtensionLoader &loader) {
