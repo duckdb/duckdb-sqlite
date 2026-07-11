@@ -11,6 +11,8 @@
 #include "sqlite_utils.hpp"
 #include "storage/sqlite_options.hpp"
 
+#include "duckdb/parser/column_list.hpp"
+
 namespace duckdb {
 class SQLiteStatement;
 struct IndexInfo;
