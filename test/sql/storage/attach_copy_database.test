@@ -1,0 +1,32 @@
+# name: test/sql/storage/attach_copy_database.test
+# description: Test copying database (tables only, no indices) into SQLite
+# group: [storage]
+
+require sqlite_scanner
+
+statement ok
+ATTACH ':memory:' AS source (TYPE sqlite);
+
+statement ok
+ATTACH ':memory:' AS target (TYPE sqlite);
+
+statement ok
+CREATE TABLE source.tab1(col1 INT)
+
+statement ok
+INSERT INTO source.tab1(col1) VALUES(42), (43)
+
+statement ok
+COPY FROM DATABASE source TO target
+
+query I
+FROM target.tab1 ORDER BY col1
+----
+42
+43
+
+statement ok
+DETACH target
+
+statement ok
+DETACH source
