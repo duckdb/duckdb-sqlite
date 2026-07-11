@@ -24,6 +24,10 @@ void SQLiteCatalog::Initialize(bool load_builtin) {
 }
 
 optional_ptr<CatalogEntry> SQLiteCatalog::CreateSchema(CatalogTransaction transaction, CreateSchemaInfo &info) {
+	if (info.SchemaName() == Identifier::DefaultSchema()) {
+		// CREATE SCHEMA is called when doing COPY DATABASE from SQLite to SQLite
+		return main_schema.get();
+	}
 	throw BinderException("SQLite databases do not support creating new schemas");
 }
 
