@@ -42,7 +42,7 @@ public:
 	                     bool is_shared = false);
 	bool TryPrepare(const string &query, SQLiteStatement &result);
 	SQLiteStatement Prepare(const string &query);
-	void Execute(const string &query);
+	int64_t Execute(const string &query);
 	vector<string> GetTables();
 
 	vector<string> GetEntries(string entry_type);

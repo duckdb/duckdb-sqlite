@@ -10,6 +10,7 @@
 
 #include "duckdb.hpp"
 #include "sqlite_utils.hpp"
+#include "storage/sqlite_catalog.hpp"
 
 namespace duckdb {
 class SQLiteDB;
@@ -31,6 +32,8 @@ struct SqliteBindData : public TableFunctionData {
 	SQLiteDB *global_db;
 
 	optional_ptr<TableCatalogEntry> table;
+	bool command_only = false;
+	optional_ptr<SQLiteCatalog> catalog = nullptr;
 };
 
 class SqliteScanFunction : public TableFunction {
