@@ -205,7 +205,7 @@ SQLiteStatement SQLiteDB::Prepare(const string &query) {
 	return stmt;
 }
 
-void SQLiteDB::Execute(const string &query) {
+int64_t SQLiteDB::Execute(const string &query) {
 	if (debug_sqlite_print_queries) {
 		Printer::Print(query + "\n");
 	}
@@ -214,6 +214,7 @@ void SQLiteDB::Execute(const string &query) {
 		string error = "Failed to execute query \"" + query + "\": " + string(sqlite3_errmsg(db));
 		throw std::runtime_error(error);
 	}
+	return static_cast<int64_t>(sqlite3_changes64(db));
 }
 
 bool SQLiteDB::IsOpen() {

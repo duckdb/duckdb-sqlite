@@ -8,17 +8,17 @@ statement ok
 ATTACH '{TEST_DIR}/sqlite_query_test.db' AS s (TYPE SQLITE)
 
 query I
-SELECT * FROM sqlite_query(s, 'SELECT 42 a')
+FROM sqlite_query(s, 'SELECT 42 a')
 ----
 42
 
 query I
-SELECT * FROM sqlite_query(s, 'SELECT unixepoch(''1992-01-01'') a')
+FROM sqlite_query(s, 'SELECT unixepoch(''1992-01-01'') a')
 ----
 694224000
 
 query I
-SELECT * FROM sqlite_query(s, 'SELECT unixepoch(?) a', params=row('1992-01-01'))
+FROM sqlite_query(s, 'SELECT unixepoch(?) a', params=row('1992-01-01'))
 ----
 694224000
 
@@ -53,47 +53,42 @@ GUINESS	PENELOPE
 GUINESS	SEAN
 
 statement error
-SELECT * FROM sqlite_query(s, '')
+FROM sqlite_query(s, '')
 ----
 Failed to prepare
 
 statement error
-SELECT * FROM sqlite_query(s, 'SELEC 42')
+FROM sqlite_query(s, 'SELEC 42')
 ----
 Failed to prepare
-
-statement error
-SELECT * FROM sqlite_query(s, 'CREATE TABLE my_table(a,b,c)')
-----
-query must return data
 
 query I
-SELECT * from sqlite_query(sakila, 'SELECT ? a', params=row(NULL))
+FROM sqlite_query(sakila, 'SELECT ? a', params=row(NULL))
 ----
 NULL
 
 query I
-SELECT * from sqlite_query(sakila, 'SELECT ? a', params=row(42::BIGINT))
+FROM sqlite_query(sakila, 'SELECT ? a', params=row(42::BIGINT))
 ----
 42
 
 query I
-SELECT * from sqlite_query(sakila, 'SELECT ? a', params=row(42.123::DOUBLE))
+FROM sqlite_query(sakila, 'SELECT ? a', params=row(42.123::DOUBLE))
 ----
 42.123
 
 query I
-SELECT * from sqlite_query(sakila, 'SELECT ? a', params=row('foo'::BLOB))
+FROM sqlite_query(sakila, 'SELECT ? a', params=row('foo'::BLOB))
 ----
 foo
 
 query I
-SELECT * from sqlite_query(sakila, 'SELECT ? || ? a', params=row('foo', 'bar'))
+FROM sqlite_query(sakila, 'SELECT ? || ? a', params=row('foo', 'bar'))
 ----
 foobar
 
 statement ok
-PREPARE p1 as SELECT * from sqlite_query(sakila, 'SELECT ? || ? a', params=row(?, ?))
+PREPARE p1 as FROM sqlite_query(sakila, 'SELECT ? || ? a', params=row(?, ?))
 
 query I
 EXECUTE p1('foo', 'bar')
@@ -109,16 +104,53 @@ statement ok
 DEALLOCATE p1
 
 statement error
-SELECT * from sqlite_query(sakila, 'SELECT ? a', params=row(42::TINYINT))
+FROM sqlite_query(sakila, 'SELECT ? a', params=row(42::TINYINT))
 ----
 Binder Error: Unsupported parameter type "TINYINT", index: 0
 
 statement error
-SELECT * from sqlite_query(sakila, 'SELECT ? a', params=NULL)
+FROM sqlite_query(sakila, 'SELECT ? a', params=NULL)
 ----
 Binder Error: Parameters to sqlite_query cannot be NULL
 
 statement error
-SELECT * from sqlite_query(sakila, 'SELECT ? a', params=42)
+FROM sqlite_query(sakila, 'SELECT ? a', params=42)
 ----
 Binder Error: Query parameters must be specified in a STRUCT
+
+# test DML
+
+query I
+FROM sqlite_query(s, 'DROP TABLE IF EXISTS query_dml_test')
+----
+0
+
+query I
+FROM sqlite_query(s, 'CREATE TABLE query_dml_test(col1 INT)')
+----
+0
+
+query I
+FROM sqlite_query(s, 'INSERT INTO query_dml_test values(41), (42)')
+----
+2
+
+query I
+FROM sqlite_query(s, 'UPDATE query_dml_test SET col1 = 43')
+----
+2
+
+query I
+FROM sqlite_query(s, 'UPDATE query_dml_test SET col1 = 44 WHERE 1 < 0')
+----
+0
+
+query II
+SELECT column_name, column_type FROM (
+  DESCRIBE FROM sqlite_query(s, 'UPDATE query_dml_test SET col1 = 44 WHERE 1 < 0')
+)
+----
+rowcount	BIGINT
+
+statement ok
+CALL sqlite_query(s, 'DROP TABLE query_dml_test')

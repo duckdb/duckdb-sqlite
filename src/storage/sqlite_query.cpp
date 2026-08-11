@@ -74,13 +74,16 @@ static unique_ptr<FunctionData> SQLiteQueryBind(ClientContext &context, TableFun
 	if (!stmt.stmt) {
 		throw BinderException("Failed to prepare query \"%s\"", sql);
 	}
-	for (idx_t c = 0; c < stmt.GetColumnCount(); c++) {
-		return_types.emplace_back(LogicalType::VARCHAR);
-		names.emplace_back(stmt.GetName(c));
-	}
-	stmt.Close();
-	if (names.empty()) {
-		throw BinderException("Failed to execute query \"%s\" - query must return data", sql);
+	if (stmt.GetColumnCount() > 0) {
+		for (idx_t c = 0; c < stmt.GetColumnCount(); c++) {
+			return_types.emplace_back(LogicalType::VARCHAR);
+			names.emplace_back(stmt.GetName(c));
+		}
+	} else {
+		return_types.emplace_back(LogicalType::BIGINT);
+		names.emplace_back("rowcount");
+		result->command_only = true;
+		result->catalog = &sqlite_catalog;
 	}
 	result->rows_per_group = optional_idx();
 	result->sql = std::move(sql);

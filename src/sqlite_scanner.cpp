@@ -3,6 +3,7 @@
 #include "sqlite_db.hpp"
 #include "sqlite_stmt.hpp"
 #include "sqlite_scanner.hpp"
+#include "storage/sqlite_transaction.hpp"
 #include <stdint.h>
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/expression/cast_expression.hpp"
@@ -152,6 +153,9 @@ static unique_ptr<NodeStatistics> SqliteCardinality(ClientContext &context, cons
 static idx_t SqliteMaxThreads(ClientContext &context, const FunctionData *bind_data_p) {
 	D_ASSERT(bind_data_p);
 	auto &bind_data = bind_data_p->Cast<SqliteBindData>();
+	if (bind_data.command_only) {
+		return 1;
+	}
 	if (bind_data.global_db) {
 		return 1;
 	}
@@ -208,12 +212,15 @@ SqliteInitLocalState(ExecutionContext &context, TableFunctionInitInput &input, G
 	auto &bind_data = input.bind_data->Cast<SqliteBindData>();
 	auto &gstate = global_state->Cast<SqliteGlobalState>();
 	auto result = make_uniq<SqliteLocalState>();
+	if (bind_data.command_only) {
+		return result;
+	}
 	result->column_ids = input.column_ids;
 	result->db = bind_data.global_db;
 	if (!SqliteParallelStateNext(context.client, bind_data, *result, gstate)) {
 		result->done = true;
 	}
-	return std::move(result);
+	return result;
 }
 
 static unique_ptr<GlobalTableFunctionState> SqliteInitGlobalState(ClientContext &context,
@@ -243,7 +250,23 @@ static timestamp_t ConvertTimestampFloat(sqlite3_value *val) {
 static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
 	auto &state = data.local_state->Cast<SqliteLocalState>();
 	auto &gstate = data.global_state->Cast<SqliteGlobalState>();
-	auto &bind_data = data.bind_data->Cast<SqliteBindData>();
+	auto &bind_data = data.bind_data->CastNoConst<SqliteBindData>();
+
+	if (bind_data.command_only) {
+		if (state.done) {
+			output.SetChildCardinality(0);
+			return;
+		}
+		D_ASSERT(bind_data.catalog);
+		auto &transaction = SQLiteTransaction::Get(context, *bind_data.catalog);
+		auto &con = transaction.GetDB();
+		int64_t affected_rows = con.Execute(bind_data.sql);
+		int64_t *vec_data = FlatVector::GetDataMutable<int64_t>(output.data[0]);
+		vec_data[0] = affected_rows;
+		state.done = true;
+		output.SetChildCardinality(1);
+		return;
+	}
 
 	while (output.size() == 0) {
 		if (state.done) {
