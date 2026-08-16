@@ -213,14 +213,14 @@ SqliteInitLocalState(ExecutionContext &context, TableFunctionInitInput &input, G
 	auto &gstate = global_state->Cast<SqliteGlobalState>();
 	auto result = make_uniq<SqliteLocalState>();
 	if (bind_data.command_only) {
-		return result;
+		return std::move(result);
 	}
 	result->column_ids = input.column_ids;
 	result->db = bind_data.global_db;
 	if (!SqliteParallelStateNext(context.client, bind_data, *result, gstate)) {
 		result->done = true;
 	}
-	return result;
+	return std::move(result);
 }
 
 static unique_ptr<GlobalTableFunctionState> SqliteInitGlobalState(ClientContext &context,
