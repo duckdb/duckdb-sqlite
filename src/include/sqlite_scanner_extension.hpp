@@ -13,6 +13,7 @@ public:
 	std::string Name() override {
 		return "sqlite_scanner";
 	}
+	std::string Version() const override;
 	void Load(ExtensionLoader &loader) override;
 };
 

@@ -59,6 +59,14 @@ void SqliteScannerExtension::Load(ExtensionLoader &loader) {
 	LoadInternal(loader);
 }
 
+std::string SqliteScannerExtension::Version() const {
+#ifdef EXT_VERSION_SQLITE_SCANNER
+	return EXT_VERSION_SQLITE_SCANNER;
+#else
+	return "";
+#endif
+}
+
 DUCKDB_CPP_EXTENSION_ENTRY(sqlite_scanner, loader) {
 	LoadInternal(loader);
 }
