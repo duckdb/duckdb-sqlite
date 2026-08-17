@@ -1,0 +1,40 @@
+# name: test/sql/storage/attach_common_subplan.test
+# description: Scans of different attached tables with identical column layouts must not be merged as common subplans
+# group: [storage]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/attach_common_subplan.db' AS s (TYPE SQLITE)
+
+statement ok
+CREATE TABLE s.flows (id VARCHAR, source VARCHAR);
+
+statement ok
+CREATE TABLE s.verifiers (id VARCHAR, source VARCHAR);
+
+statement ok
+INSERT INTO s.flows VALUES ('f1', 'file'), ('f2', 'file');
+
+statement ok
+INSERT INTO s.verifiers VALUES ('v1', 'file'), ('v2', 'file'), ('v3', 'file');
+
+query II
+SELECT (SELECT divide(count(*), 1) FROM s.flows WHERE source='file'),
+       (SELECT divide(count(*), 1) FROM s.verifiers WHERE source='file');
+----
+2	3
+
+query II
+SELECT (SELECT string_agg(id, ',' ORDER BY id) FROM s.flows),
+       (SELECT string_agg(id, ',' ORDER BY id) FROM s.verifiers);
+----
+f1,f2	v1,v2,v3
+
+query II
+SELECT 'flow' AS kind, count(*) FROM s.flows WHERE source='file'
+UNION ALL
+SELECT 'verifier', count(*) FROM s.verifiers WHERE source='file';
+----
+flow	2
+verifier	3
