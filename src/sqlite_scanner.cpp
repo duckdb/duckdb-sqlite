@@ -47,7 +47,7 @@ struct SqliteGlobalState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> SqliteBind(ClientContext &context, TableFunctionBindInput &input,
-                                           vector<LogicalType> &return_types, vector<string> &names) {
+                                           vector<LogicalType> &return_types, vector<Identifier> &names) {
 
 	auto result = make_uniq<SqliteBindData>();
 	result->file_name = input.inputs[0].GetValue<string>();
@@ -69,7 +69,7 @@ static unique_ptr<FunctionData> SqliteBind(ClientContext &context, TableFunction
 	}
 	db.GetTableInfo(result->table_name, columns, constraints, result->all_varchar);
 	for (auto &column : columns.Logical()) {
-		names.emplace_back(column.GetName().GetIdentifierName());
+		names.emplace_back(column.GetName());
 		return_types.push_back(column.GetType());
 	}
 
@@ -81,7 +81,9 @@ static unique_ptr<FunctionData> SqliteBind(ClientContext &context, TableFunction
 		result->rows_per_group = optional_idx();
 	}
 
-	result->names = names;
+	for (auto &nm : names) {
+		result->names.push_back(nm.GetIdentifierName());
+	}
 	result->types = return_types;
 
 	return std::move(result);
@@ -420,7 +422,7 @@ struct AttachFunctionData : public TableFunctionData {
 };
 
 static unique_ptr<FunctionData> AttachBind(ClientContext &context, TableFunctionBindInput &input,
-                                           vector<LogicalType> &return_types, vector<string> &names) {
+                                           vector<LogicalType> &return_types, vector<Identifier> &names) {
 
 	auto result = make_uniq<AttachFunctionData>();
 	result->file_name = input.inputs[0].GetValue<string>();
