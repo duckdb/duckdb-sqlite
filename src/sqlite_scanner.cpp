@@ -371,11 +371,22 @@ SqliteStatistics(ClientContext &context, const FunctionData *bind_data_p,
 }
 */
 
+static void SqliteScanSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
+                               const TableFunction &function) {
+	throw NotImplementedException("SqliteScanSerialize");
+}
+
+static unique_ptr<FunctionData> SqliteScanDeserialize(Deserializer &deserializer, TableFunction &function) {
+	throw NotImplementedException("SqliteScanDeserialize");
+}
+
 SqliteScanFunction::SqliteScanFunction()
     : TableFunction("sqlite_scan", {LogicalType::VARCHAR, LogicalType::VARCHAR}, SqliteScan, SqliteBind,
                     SqliteInitGlobalState, SqliteInitLocalState) {
 	cardinality = SqliteCardinality;
 	to_string = SqliteToString;
+	serialize = SqliteScanSerialize;
+	deserialize = SqliteScanDeserialize;
 	get_bind_info = SqliteBindInfo;
 	projection_pushdown = true;
 }

@@ -1,0 +1,21 @@
+# name: test/sql/scanner/cte_inlining.test
+# description: Test serialization problem with CTE inlining
+# group: [scanner]
+
+# https://github.com/duckdb/duckdb-sqlite/issues/212
+
+require sqlite_scanner
+
+statement ok
+ATTACH ':memory:' AS s (TYPE sqlite);
+
+statement ok
+CREATE TABLE s.t(id INTEGER, name TEXT)
+
+query I
+WITH p AS (SELECT id FROM s.t) SELECT * FROM p UNION ALL SELECT * FROM p LIMIT 1;
+----
+
+statement ok
+DETACH
+s
