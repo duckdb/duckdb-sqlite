@@ -28,7 +28,7 @@ struct SqliteBindData : public TableFunctionData {
 	bool all_varchar = false;
 
 	optional_idx rows_per_group = 122880;
-	SQLiteDB *global_db;
+	SQLiteDB *global_db = nullptr;
 
 	optional_ptr<TableCatalogEntry> table;
 };

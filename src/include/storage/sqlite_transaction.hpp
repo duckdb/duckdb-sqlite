@@ -37,7 +37,7 @@ public:
 
 private:
 	SQLiteCatalog &sqlite_catalog;
-	SQLiteDB *db;
+	SQLiteDB *db = nullptr;
 	SQLiteDB owned_db;
 	unique_ptr<SQLiteCatalogMap> catalog_map;
 
