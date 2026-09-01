@@ -49,8 +49,8 @@ namespace duckdb {
 // Per-context VFS instances. vfs_name uses sqlite3_malloc for cross-DLL safety.
 struct DuckDBVFSWrapper {
 	sqlite3_vfs base; // Must be first - SQLite VFS structure
-	ClientContext *context;
-	char *vfs_name;
+	ClientContext *context = nullptr;
+	char *vfs_name = nullptr;
 	sqlite3_io_methods io_methods;
 
 	mutable mutex error_mutex;

@@ -27,8 +27,8 @@ public:
 	SQLiteStatement(SQLiteStatement &&other) noexcept;
 	SQLiteStatement &operator=(SQLiteStatement &&) noexcept;
 
-	sqlite3 *db;
-	sqlite3_stmt *stmt;
+	sqlite3 *db = nullptr;
+	sqlite3_stmt *stmt = nullptr;
 
 public:
 	int Step();
