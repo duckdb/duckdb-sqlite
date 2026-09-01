@@ -29,14 +29,14 @@ public:
 
 string GetUpdateSQL(SQLiteTableEntry &table, const vector<PhysicalIndex> &index) {
 	string result;
-	result = "UPDATE " + KeywordHelper::WriteOptionallyQuoted(table.name.GetIdentifierName());
+	result = "UPDATE " + SQLiteUtils::WriteOptionallyQuoted(table.name.GetIdentifierName());
 	result += " SET ";
 	for (idx_t i = 0; i < index.size(); i++) {
 		if (i > 0) {
 			result += ", ";
 		}
 		auto &col = table.GetColumn(LogicalIndex(index[i].index));
-		result += KeywordHelper::WriteOptionallyQuoted(col.GetName().GetIdentifierName());
+		result += SQLiteUtils::WriteOptionallyQuoted(col.GetName().GetIdentifierName());
 		result += " = ?";
 	}
 	result += " WHERE rowid = ?";
@@ -84,8 +84,8 @@ SinkResultType SQLiteUpdate::Sink(ExecutionContext &context, DataChunk &chunk, O
 SourceResultType SQLiteUpdate::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
                                                OperatorSourceInput &input) const {
 	auto &insert_gstate = sink_state->Cast<SQLiteUpdateGlobalState>();
-	chunk.SetCardinality(1);
-	chunk.SetValue(0, 0, Value::BIGINT(insert_gstate.update_count));
+	chunk.SetChildCardinality(1);
+	chunk.data[0].SetValue(0, Value::BIGINT(insert_gstate.update_count));
 	FlatVector::SetSize(chunk.data[0], count_t(1));
 
 	return SourceResultType::FINISHED;

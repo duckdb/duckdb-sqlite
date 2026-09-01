@@ -285,7 +285,7 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 		idx_t out_idx = 0;
 		while (true) {
 			if (out_idx == STANDARD_VECTOR_SIZE) {
-				output.SetCardinality(out_idx);
+				output.SetChildCardinality(out_idx);
 				SetVectorSizes(out_idx);
 				return;
 			}
@@ -293,7 +293,7 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 			auto has_more = stmt.Step();
 			if (!has_more) {
 				state.done = true;
-				output.SetCardinality(out_idx);
+				output.SetChildCardinality(out_idx);
 				SetVectorSizes(out_idx);
 				break;
 			}

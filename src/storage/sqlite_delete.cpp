@@ -34,7 +34,7 @@ public:
 
 string GetDeleteSQL(const string &table_name) {
 	string result;
-	result = "DELETE FROM " + KeywordHelper::WriteOptionallyQuoted(table_name);
+	result = "DELETE FROM " + SQLiteUtils::WriteOptionallyQuoted(table_name);
 	result += " WHERE rowid = ?";
 	return result;
 }
@@ -80,8 +80,8 @@ SourceResultType SQLiteDelete::GetDataInternal(ExecutionContext &context, DataCh
 		insert_gstate.delete_count = insert_gstate.rowids.size();
 		insert_gstate.delete_done = true;
 	}
-	chunk.SetCardinality(1);
-	chunk.SetValue(0, 0, Value::BIGINT(insert_gstate.delete_count));
+	chunk.SetChildCardinality(1);
+	chunk.data[0].SetValue(0, Value::BIGINT(insert_gstate.delete_count));
 	FlatVector::SetSize(chunk.data[0], count_t(1));
 
 	return SourceResultType::FINISHED;

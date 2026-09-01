@@ -268,7 +268,7 @@ string GetDropSQL(CatalogType type, const string &table_name, bool cascade) {
 	default:
 		throw InternalException("Unsupported type for drop");
 	}
-	result += KeywordHelper::WriteOptionallyQuoted(table_name);
+	result += SQLiteUtils::WriteOptionallyQuoted(table_name);
 	return result;
 }
 

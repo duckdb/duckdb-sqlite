@@ -1,5 +1,8 @@
 #include "sqlite_utils.hpp"
 
+#include "duckdb/common/string_util.hpp"
+#include "duckdb/parser/keyword_helper.hpp"
+
 namespace duckdb {
 
 void SQLiteUtils::Check(int rc, sqlite3 *db) {
@@ -111,6 +114,32 @@ LogicalType SQLiteUtils::TypeToLogicalType(const string &sqlite_type) {
 
 	// alright, give up and fallback to varchar
 	return LogicalType::VARCHAR;
+}
+
+string SQLiteUtils::EscapeQuotes(const string &text, char quote) {
+	return StringUtil::Replace(text, string(1, quote), string(2, quote));
+}
+
+string SQLiteUtils::WriteQuotedAndEscaped(const string &text, char quote) {
+	string result;
+	result.reserve(text.size() + 2);
+	result += quote;
+	for (auto c : text) {
+		if (c == quote) {
+			// character matches quote - escape by adding the quote again
+			result += quote;
+		}
+		result += c;
+	}
+	result += quote;
+	return result;
+}
+
+string SQLiteUtils::WriteOptionallyQuoted(const string &text, char quote, bool allow_caps) {
+	if (!KeywordHelper::RequiresQuotes(text, allow_caps)) {
+		return text;
+	}
+	return SQLiteUtils::WriteQuotedAndEscaped(text, quote);
 }
 
 } // namespace duckdb

@@ -22,6 +22,10 @@ public:
 	static string SanitizeIdentifier(const string &table_name);
 	static LogicalType ToSQLiteType(const LogicalType &input);
 	string ToSQLiteTypeAlias(const LogicalType &input);
+
+	static string EscapeQuotes(const string &text, char quote);
+	static string WriteQuotedAndEscaped(const string &text, char quote);
+	static string WriteOptionallyQuoted(const string &text, char quote = '"', bool allow_caps = true);
 };
 
 struct RowIdInfo {
