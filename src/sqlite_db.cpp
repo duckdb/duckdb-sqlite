@@ -10,6 +10,7 @@
 #include "sqlite_db.hpp"
 #include "sqlite_stmt.hpp"
 #include "sqlite_duckdb_vfs_cache.hpp"
+#include "sqlite_utils.hpp"
 
 namespace duckdb {
 
@@ -133,7 +134,7 @@ SQLiteDB SQLiteDB::OpenLocal(const string &path, const SQLiteOpenOptions &option
 	ApplyBusyTimeout(result.db, options);
 
 	if (!options.journal_mode.empty()) {
-		result.Execute("PRAGMA journal_mode=" + KeywordHelper::EscapeQuotes(options.journal_mode, '\''));
+		result.Execute("PRAGMA journal_mode=" + SQLiteUtils::EscapeQuotes(options.journal_mode, '\''));
 	}
 	return result;
 }

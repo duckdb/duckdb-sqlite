@@ -39,7 +39,7 @@ public:
 
 string GetInsertSQL(const SQLiteInsert &insert, SQLiteTableEntry *entry) {
 	string result;
-	result = "INSERT INTO " + KeywordHelper::WriteOptionallyQuoted(entry->name.GetIdentifierName());
+	result = "INSERT INTO " + SQLiteUtils::WriteOptionallyQuoted(entry->name.GetIdentifierName());
 	auto &columns = entry->GetColumns();
 	idx_t column_count;
 	if (!insert.column_index_map.empty()) {
@@ -62,7 +62,7 @@ string GetInsertSQL(const SQLiteInsert &insert, SQLiteTableEntry *entry) {
 				result += ", ";
 			}
 			auto &col = columns.GetColumn(column_indexes[c]);
-			result += KeywordHelper::WriteOptionallyQuoted(col.GetName().GetIdentifierName());
+			result += SQLiteUtils::WriteOptionallyQuoted(col.GetName().GetIdentifierName());
 		}
 		result += ")";
 	} else {
@@ -120,8 +120,8 @@ SinkResultType SQLiteInsert::Sink(ExecutionContext &context, DataChunk &chunk, O
 SourceResultType SQLiteInsert::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
                                                OperatorSourceInput &input) const {
 	auto &insert_gstate = sink_state->Cast<SQLiteInsertGlobalState>();
-	chunk.SetCardinality(1);
-	chunk.SetValue(0, 0, Value::BIGINT(insert_gstate.insert_count));
+	chunk.SetChildCardinality(1);
+	chunk.data[0].SetValue(0, Value::BIGINT(insert_gstate.insert_count));
 	FlatVector::SetSize(chunk.data[0], count_t(1));
 
 	return SourceResultType::FINISHED;

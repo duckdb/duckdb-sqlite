@@ -37,7 +37,7 @@ string GetCreateTableSQL(CreateTableInfo &info) {
 	if (info.on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
 		ss << "IF NOT EXISTS ";
 	}
-	ss << KeywordHelper::WriteOptionallyQuoted(info.GetTableName().GetIdentifierName());
+	ss << SQLiteUtils::WriteOptionallyQuoted(info.GetTableName().GetIdentifierName());
 	ss << TableCatalogEntry::ColumnsToSQL(info.columns, info.constraints);
 	ss << ";";
 	return ss.str();
@@ -89,9 +89,9 @@ string GetCreateIndexSQL(CreateIndexInfo &info, TableCatalogEntry &tbl) {
 	if (info.on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
 		sql += " IF NOT EXISTS ";
 	}
-	sql += KeywordHelper::WriteOptionallyQuoted(info.GetIndexName().GetIdentifierName());
+	sql += SQLiteUtils::WriteOptionallyQuoted(info.GetIndexName().GetIdentifierName());
 	sql += " ON ";
-	sql += KeywordHelper::WriteOptionallyQuoted(tbl.name.GetIdentifierName());
+	sql += SQLiteUtils::WriteOptionallyQuoted(tbl.name.GetIdentifierName());
 	sql += "(";
 	for (idx_t i = 0; i < info.parsed_expressions.size(); i++) {
 		if (i > 0) {
@@ -117,7 +117,7 @@ string GetCreateViewSQL(CreateViewInfo &info) {
 	if (info.on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
 		sql += "IF NOT EXISTS ";
 	}
-	sql += KeywordHelper::WriteOptionallyQuoted(info.GetViewName().GetIdentifierName());
+	sql += SQLiteUtils::WriteOptionallyQuoted(info.GetViewName().GetIdentifierName());
 	sql += " ";
 	if (!info.aliases.empty()) {
 		sql += "(";
@@ -126,7 +126,7 @@ string GetCreateViewSQL(CreateViewInfo &info) {
 				sql += ", ";
 			}
 			auto &alias = info.aliases[i];
-			sql += KeywordHelper::WriteOptionallyQuoted(alias.GetIdentifierName());
+			sql += SQLiteUtils::WriteOptionallyQuoted(alias.GetIdentifierName());
 		}
 		sql += ") ";
 	}
@@ -179,19 +179,19 @@ optional_ptr<CatalogEntry> SQLiteSchemaEntry::CreateType(CatalogTransaction tran
 
 void SQLiteSchemaEntry::AlterTable(SQLiteTransaction &sqlite_transaction, RenameTableInfo &info) {
 	string sql = "ALTER TABLE ";
-	sql += KeywordHelper::WriteOptionallyQuoted(info.GetQualifiedName().Name().GetIdentifierName());
+	sql += SQLiteUtils::WriteOptionallyQuoted(info.GetQualifiedName().Name().GetIdentifierName());
 	sql += " RENAME TO ";
-	sql += KeywordHelper::WriteOptionallyQuoted(info.new_table_name.GetIdentifierName());
+	sql += SQLiteUtils::WriteOptionallyQuoted(info.new_table_name.GetIdentifierName());
 	sqlite_transaction.GetDB().Execute(sql);
 }
 
 void SQLiteSchemaEntry::AlterTable(SQLiteTransaction &sqlite_transaction, RenameColumnInfo &info) {
 	string sql = "ALTER TABLE ";
-	sql += KeywordHelper::WriteOptionallyQuoted(info.GetQualifiedName().Name().GetIdentifierName());
+	sql += SQLiteUtils::WriteOptionallyQuoted(info.GetQualifiedName().Name().GetIdentifierName());
 	sql += " RENAME COLUMN  ";
-	sql += KeywordHelper::WriteOptionallyQuoted(info.old_name.GetIdentifierName());
+	sql += SQLiteUtils::WriteOptionallyQuoted(info.old_name.GetIdentifierName());
 	sql += " TO ";
-	sql += KeywordHelper::WriteOptionallyQuoted(info.new_name.GetIdentifierName());
+	sql += SQLiteUtils::WriteOptionallyQuoted(info.new_name.GetIdentifierName());
 	sqlite_transaction.GetDB().Execute(sql);
 }
 
@@ -203,9 +203,9 @@ void SQLiteSchemaEntry::AlterTable(SQLiteTransaction &sqlite_transaction, AddCol
 		}
 	}
 	string sql = "ALTER TABLE ";
-	sql += KeywordHelper::WriteOptionallyQuoted(info.GetQualifiedName().Name().GetIdentifierName());
+	sql += SQLiteUtils::WriteOptionallyQuoted(info.GetQualifiedName().Name().GetIdentifierName());
 	sql += " ADD COLUMN  ";
-	sql += KeywordHelper::WriteOptionallyQuoted(info.new_column.Name().GetIdentifierName());
+	sql += SQLiteUtils::WriteOptionallyQuoted(info.new_column.Name().GetIdentifierName());
 	sql += " ";
 	sql += info.new_column.Type().ToString();
 	sqlite_transaction.GetDB().Execute(sql);
@@ -219,9 +219,9 @@ void SQLiteSchemaEntry::AlterTable(SQLiteTransaction &sqlite_transaction, Remove
 		}
 	}
 	string sql = "ALTER TABLE ";
-	sql += KeywordHelper::WriteOptionallyQuoted(info.GetQualifiedName().Name().GetIdentifierName());
+	sql += SQLiteUtils::WriteOptionallyQuoted(info.GetQualifiedName().Name().GetIdentifierName());
 	sql += " DROP COLUMN  ";
-	sql += KeywordHelper::WriteOptionallyQuoted(info.removed_column.GetIdentifierName());
+	sql += SQLiteUtils::WriteOptionallyQuoted(info.removed_column.GetIdentifierName());
 	sqlite_transaction.GetDB().Execute(sql);
 }
 
