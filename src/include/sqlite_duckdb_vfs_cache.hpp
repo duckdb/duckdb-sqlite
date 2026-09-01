@@ -103,10 +103,10 @@ public:
 
 // Allocated by SQLite; may cross module boundaries -- raw pointers with explicit ownership.
 struct SQLiteDuckDBCachedFile {
-	sqlite3_file base;             // Must be first member for C compatibility
-	DuckDBCachedFile *duckdb_file; // deleted in Close()
-	DuckDBVFSWrapper *wrapper;     // VFS instance owning the io_methods this file points into;
-	                               // refcounted so the wrapper outlives its open files
+	sqlite3_file base;                       // Must be first member for C compatibility
+	DuckDBCachedFile *duckdb_file = nullptr; // deleted in Close()
+	DuckDBVFSWrapper *wrapper = nullptr;     // VFS instance owning the io_methods this file points into;
+	                                         // refcounted so the wrapper outlives its open files
 };
 
 } // namespace duckdb
