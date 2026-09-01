@@ -30,10 +30,9 @@ SQLiteInsert::SQLiteInsert(PhysicalPlan &physical_plan, LogicalOperator &op, Sch
 //===--------------------------------------------------------------------===//
 class SQLiteInsertGlobalState : public GlobalSinkState {
 public:
-	explicit SQLiteInsertGlobalState(ClientContext &context, SQLiteTableEntry *table) : insert_count(0) {
+	explicit SQLiteInsertGlobalState(ClientContext &context) : insert_count(0) {
 	}
 
-	SQLiteTableEntry *table;
 	SQLiteStatement statement;
 	idx_t insert_count;
 };
@@ -90,7 +89,7 @@ unique_ptr<GlobalSinkState> SQLiteInsert::GetGlobalSinkState(ClientContext &cont
 		insert_table = &table.get_mutable()->Cast<SQLiteTableEntry>();
 	}
 	auto &transaction = SQLiteTransaction::Get(context, insert_table->catalog);
-	auto result = make_uniq<SQLiteInsertGlobalState>(context, insert_table);
+	auto result = make_uniq<SQLiteInsertGlobalState>(context);
 	result->statement = transaction.GetDB().Prepare(GetInsertSQL(*this, insert_table));
 	return std::move(result);
 }

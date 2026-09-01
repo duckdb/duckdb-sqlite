@@ -30,7 +30,7 @@ public:
 	SQLiteDB(SQLiteDB &&other) noexcept;
 	SQLiteDB &operator=(SQLiteDB &&) noexcept;
 
-	sqlite3 *db;
+	sqlite3 *db = nullptr;
 
 public:
 	//! Open a SQLite database (local files only)

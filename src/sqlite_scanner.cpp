@@ -19,7 +19,7 @@
 namespace duckdb {
 
 struct SqliteLocalState : public LocalTableFunctionState {
-	SQLiteDB *db;
+	SQLiteDB *db = nullptr;
 	SQLiteDB owned_db;
 	SQLiteStatement stmt;
 	string stmt_sql;
