@@ -103,6 +103,23 @@ bazboo
 statement ok
 DEALLOCATE p1
 
+# prepared statement without parameters
+statement ok
+PREPARE p2 AS FROM sqlite_query(sakila, 'SELECT first_name FROM actor WHERE actor_id=1')
+
+query I
+EXECUTE p2
+----
+PENELOPE
+
+query I
+EXECUTE p2
+----
+PENELOPE
+
+statement ok
+DEALLOCATE p2
+
 statement error
 FROM sqlite_query(sakila, 'SELECT ? a', params=row(42::TINYINT))
 ----

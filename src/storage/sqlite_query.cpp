@@ -83,14 +83,13 @@ static unique_ptr<FunctionData> SQLiteQueryBind(ClientContext &context, TableFun
 		return_types.emplace_back(LogicalType::BIGINT);
 		names.emplace_back("rowcount");
 		result->command_only = true;
-		result->catalog = &sqlite_catalog;
 	}
 	result->rows_per_group = optional_idx();
 	result->sql = std::move(sql);
 	result->params = std::move(params);
 	result->all_varchar = true;
 	result->file_name = sqlite_catalog.GetDBPath();
-	result->global_db = &con;
+	result->catalog = &sqlite_catalog;
 	return std::move(result);
 }
 

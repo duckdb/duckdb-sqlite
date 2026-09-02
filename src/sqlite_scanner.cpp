@@ -158,7 +158,7 @@ static idx_t SqliteMaxThreads(ClientContext &context, const FunctionData *bind_d
 	if (bind_data.command_only) {
 		return 1;
 	}
-	if (bind_data.global_db) {
+	if (bind_data.catalog) {
 		return 1;
 	}
 	if (!bind_data.row_id_info.max_rowid.IsValid()) {
@@ -211,14 +211,17 @@ static bool SqliteParallelStateNext(ClientContext &context, const SqliteBindData
 
 static unique_ptr<LocalTableFunctionState>
 SqliteInitLocalState(ExecutionContext &context, TableFunctionInitInput &input, GlobalTableFunctionState *global_state) {
-	auto &bind_data = input.bind_data->Cast<SqliteBindData>();
+	auto &bind_data = input.bind_data->CastNoConst<SqliteBindData>();
 	auto &gstate = global_state->Cast<SqliteGlobalState>();
 	auto result = make_uniq<SqliteLocalState>();
 	if (bind_data.command_only) {
 		return std::move(result);
 	}
 	result->column_ids = input.column_ids;
-	result->db = bind_data.global_db;
+	if (bind_data.catalog) {
+		// the bind data can outlive the transaction it was bound in (e.g. PREPARE/EXECUTE) - use the current one
+		result->db = &SQLiteTransaction::Get(context.client, *bind_data.catalog).GetDB();
+	}
 	if (!SqliteParallelStateNext(context.client, bind_data, *result, gstate)) {
 		result->done = true;
 	}
