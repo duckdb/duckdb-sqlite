@@ -15,6 +15,8 @@
 #include "duckdb/common/operator/cast_operators.hpp"
 #include <cmath>
 
+#include "storage/sqlite_transaction.hpp"
+
 namespace duckdb {
 
 struct SqliteLocalState : public LocalTableFunctionState {
@@ -152,7 +154,7 @@ static unique_ptr<NodeStatistics> SqliteCardinality(ClientContext &context, cons
 static idx_t SqliteMaxThreads(ClientContext &context, const FunctionData *bind_data_p) {
 	D_ASSERT(bind_data_p);
 	auto &bind_data = bind_data_p->Cast<SqliteBindData>();
-	if (bind_data.global_db) {
+	if (bind_data.catalog) {
 		return 1;
 	}
 	if (!bind_data.row_id_info.max_rowid.IsValid()) {
@@ -205,11 +207,14 @@ static bool SqliteParallelStateNext(ClientContext &context, const SqliteBindData
 
 static unique_ptr<LocalTableFunctionState>
 SqliteInitLocalState(ExecutionContext &context, TableFunctionInitInput &input, GlobalTableFunctionState *global_state) {
-	auto &bind_data = input.bind_data->Cast<SqliteBindData>();
+	auto &bind_data = input.bind_data->CastNoConst<SqliteBindData>();
 	auto &gstate = global_state->Cast<SqliteGlobalState>();
 	auto result = make_uniq<SqliteLocalState>();
 	result->column_ids = input.column_ids;
-	result->db = bind_data.global_db;
+	if (bind_data.catalog) {
+		// the bind data can outlive the transaction it was bound in (e.g. PREPARE/EXECUTE) - use the current one
+		result->db = &SQLiteTransaction::Get(context.client, *bind_data.catalog).GetDB();
+	}
 	if (!SqliteParallelStateNext(context.client, bind_data, *result, gstate)) {
 		result->done = true;
 	}

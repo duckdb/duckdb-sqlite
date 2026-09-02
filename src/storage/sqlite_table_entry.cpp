@@ -54,9 +54,8 @@ TableFunction SQLiteTableEntry::GetScanFunction(ClientContext &context, unique_p
 
 	if (use_global_db) {
 		// for in-memory databases or if we have transaction-local changes we can
-		// only do a single-threaded scan set up the transaction's connection object
-		// as the global db
-		result->global_db = &db;
+		// only do a single-threaded scan using the transaction's connection object
+		result->catalog = &sqlite_catalog;
 		result->rows_per_group = optional_idx();
 	}
 	result->table = this;
