@@ -14,7 +14,7 @@ jobs:
     name: Build extension binaries
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
     with:
-      duckdb_version: fc4002c6e36f1e2d17d7c5b1a604777d69238d2b
+      duckdb_version: 30ad316060f38aecd8ceee67f9984c96b3741756
       extension_name: sqlite_scanner
       ci_tools_version: main
       exclude_archs: 'windows_amd64_mingw'
@@ -26,7 +26,7 @@ jobs:
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_deploy.yml@main
     secrets: inherit
     with:
-      duckdb_version: fc4002c6e36f1e2d17d7c5b1a604777d69238d2b
+      duckdb_version: 30ad316060f38aecd8ceee67f9984c96b3741756
       extension_name: sqlite_scanner
       ci_tools_version: main
       exclude_archs: 'windows_amd64_mingw'
