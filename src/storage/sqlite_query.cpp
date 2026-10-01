@@ -93,13 +93,20 @@ static unique_ptr<FunctionData> SQLiteQueryBind(ClientContext &context, TableFun
 	return std::move(result);
 }
 
+static FunctionSignature SQLiteQuerySignature() {
+	FunctionSignature signature;
+	signature.AddParameter("database", LogicalType::VARCHAR)
+	    .AddParameter("sql", LogicalType::VARCHAR)
+	    .WithTypedKwargs("options", [&](TypedKwargs &options) { options.Add("params", LogicalType::ANY); });
+	return signature;
+}
+
 SQLiteQueryFunction::SQLiteQueryFunction()
-    : TableFunction("sqlite_query", {LogicalType::VARCHAR, LogicalType::VARCHAR}, nullptr, SQLiteQueryBind) {
+    : TableFunction("sqlite_query", SQLiteQuerySignature(), nullptr, SQLiteQueryBind) {
 	SqliteScanFunction scan_function;
 	init_global = scan_function.init_global;
 	init_local = scan_function.init_local;
 	function = scan_function.function;
 	global_initialization = TableFunctionInitialization::INITIALIZE_ON_SCHEDULE;
-	named_parameters["params"] = LogicalType::ANY;
 }
 } // namespace duckdb

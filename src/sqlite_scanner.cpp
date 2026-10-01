@@ -417,17 +417,20 @@ SqliteStatistics(ClientContext &context, const FunctionData *bind_data_p,
 */
 
 static void SqliteScanSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
-                               const TableFunction &function) {
+                               const BoundTableFunction &function) {
 	throw NotImplementedException("SqliteScanSerialize");
 }
 
-static unique_ptr<FunctionData> SqliteScanDeserialize(Deserializer &deserializer, TableFunction &function) {
+static unique_ptr<FunctionData> SqliteScanDeserialize(Deserializer &deserializer, BoundTableFunction &function) {
 	throw NotImplementedException("SqliteScanDeserialize");
 }
 
 SqliteScanFunction::SqliteScanFunction()
-    : TableFunction("sqlite_scan", {LogicalType::VARCHAR, LogicalType::VARCHAR}, SqliteScan, SqliteBind,
-                    SqliteInitGlobalState, SqliteInitLocalState) {
+    : TableFunction("sqlite_scan",
+                    FunctionSignature()
+                        .AddPositionalOnly("path", LogicalType::VARCHAR)
+                        .AddPositionalOnly("table_name", LogicalType::VARCHAR),
+                    SqliteScan, SqliteBind, SqliteInitGlobalState, SqliteInitLocalState) {
 	cardinality = SqliteCardinality;
 	to_string = SqliteToString;
 	serialize = SqliteScanSerialize;
@@ -489,9 +492,16 @@ static void AttachFunction(ClientContext &context, TableFunctionInput &data_p, D
 	data.finished = true;
 }
 
+static FunctionSignature SqliteAttachSignature() {
+	FunctionSignature signature;
+	signature.AddParameter("file_name", LogicalType::VARCHAR).WithTypedKwargs("options", [&](TypedKwargs &options) {
+		options.Add("overwrite", LogicalType::BOOLEAN);
+	});
+	return signature;
+}
+
 SqliteAttachFunction::SqliteAttachFunction()
-    : TableFunction("sqlite_attach", {LogicalType::VARCHAR}, AttachFunction, AttachBind) {
-	named_parameters["overwrite"] = LogicalType::BOOLEAN;
+    : TableFunction("sqlite_attach", SqliteAttachSignature(), AttachFunction, AttachBind) {
 }
 
 } // namespace duckdb
