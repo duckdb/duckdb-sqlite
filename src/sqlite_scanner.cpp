@@ -184,7 +184,7 @@ static bool SqliteClaimNextSlice(const SqliteBindData &bind_data, SqliteLocalSta
 		return true;
 	}
 	auto max_row_id = bind_data.row_id_info.max_rowid.GetIndex();
-	if (gstate.position >= max_row_id) {
+	if (gstate.position > max_row_id) {
 		return false;
 	}
 	if (lstate.scan_count == 0 && gstate.rows_per_group < max_row_id) {
