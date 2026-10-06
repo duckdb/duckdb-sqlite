@@ -316,7 +316,7 @@ void SQLiteDB::GetTableInfo(const string &table_name, ColumnList &columns, vecto
 		}
 		ColumnDefinition column(Identifier(std::move(sqlite_colname)), std::move(column_type));
 		if (!default_value.empty() && default_value != "\"\"") {
-			auto expressions = Parser::ParseExpressionList(default_value);
+			auto expressions = Parser::GetBuiltinParser().ParseExpressionList(default_value);
 			if (expressions.empty()) {
 				throw InternalException("Expression list is empty");
 			}
