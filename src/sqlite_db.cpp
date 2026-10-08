@@ -332,11 +332,11 @@ void SQLiteDB::GetTableInfo(const string &table_name, ColumnList &columns, vecto
 		throw InternalException("GetTableInfo - table \"%s\" not found", table_name);
 	}
 	if (!primary_keys.empty()) {
+		auto uc = make_uniq<UniqueConstraint>(std::move(primary_keys), true);
 		if (primary_keys.size() == 1) {
-			constraints.push_back(make_uniq<UniqueConstraint>(LogicalIndex(primary_key_index), true));
-		} else {
-			constraints.push_back(make_uniq<UniqueConstraint>(std::move(primary_keys), true));
+			uc->SetIndex(LogicalIndex(primary_key_index));
 		}
+		constraints.emplace_back(std::move(uc));
 	}
 }
 
