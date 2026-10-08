@@ -125,7 +125,7 @@ SQLiteTransaction &SQLiteTransaction::Get(ClientContext &context, Catalog &catal
 }
 
 string ExtractSelectStatement(const string &create_view) {
-	Parser parser;
+	auto parser = Parser::GetBuiltinParser();
 	parser.ParseQuery(create_view);
 	if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::CREATE_STATEMENT) {
 		throw BinderException(
@@ -159,7 +159,7 @@ void ExtractColumnIds(const ParsedExpression &expr, TableCatalogEntry &table, Cr
 
 unique_ptr<CreateIndexInfo> FromCreateIndex(ClientContext &context, TableCatalogEntry &table, string sql) {
 	// parse the SQL statement
-	Parser parser;
+	auto parser = Parser::GetBuiltinParser();
 	parser.ParseQuery(sql);
 
 	if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::CREATE_STATEMENT) {

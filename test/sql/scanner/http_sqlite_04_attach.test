@@ -28,12 +28,12 @@ SELECT film_id, title, length FROM http_db.film WHERE film_id = 1;
 statement error
 CREATE TABLE http_db.t(i INTEGER);
 ----
-read-only mode
+attempt to write a readonly database
 
 statement error
 INSERT INTO http_db.category VALUES (9999, 'x', NULL);
 ----
-read-only mode
+attempt to write a readonly database
 
 statement ok
 DETACH http_db;
