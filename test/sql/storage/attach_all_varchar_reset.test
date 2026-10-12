@@ -59,10 +59,12 @@ SET GLOBAL sqlite_all_varchar = true
 statement ok
 RESET GLOBAL sqlite_all_varchar
 
-statement ok
-RESET sqlite_all_varchar
-
-query I
+query I con2
 SELECT current_setting('sqlite_all_varchar')
 ----
 false
+
+query II con2
+SELECT i, typeof(i) FROM sqlite_scan('__TEST_DIR__/all_varchar_reset.db', 't')
+----
+1	BIGINT

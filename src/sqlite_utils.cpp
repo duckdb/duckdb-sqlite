@@ -1,6 +1,7 @@
 #include "sqlite_utils.hpp"
 
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
 
 namespace duckdb {
@@ -140,6 +141,14 @@ string SQLiteUtils::WriteOptionallyQuoted(const string &text, char quote, bool a
 		return text;
 	}
 	return SQLiteUtils::WriteQuotedAndEscaped(text, quote);
+}
+
+bool SQLiteUtils::AllVarchar(ClientContext &context) {
+	Value all_varchar;
+	if (!context.TryGetCurrentSetting("sqlite_all_varchar", all_varchar) || all_varchar.IsNull()) {
+		return false;
+	}
+	return BooleanValue::Get(all_varchar);
 }
 
 } // namespace duckdb

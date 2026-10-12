@@ -26,6 +26,9 @@ public:
 	static string EscapeQuotes(const string &text, char quote);
 	static string WriteQuotedAndEscaped(const string &text, char quote);
 	static string WriteOptionallyQuoted(const string &text, char quote = '"', bool allow_caps = true);
+
+	//! The value of sqlite_all_varchar, false when it is not set or NULL
+	static bool AllVarchar(ClientContext &context);
 };
 
 struct RowIdInfo {
