@@ -67,7 +67,7 @@ static unique_ptr<FunctionData> SqliteBind(ClientContext &context, TableFunction
 
 	result->all_varchar = false;
 	Value sqlite_all_varchar;
-	if (context.TryGetCurrentSetting("sqlite_all_varchar", sqlite_all_varchar)) {
+	if (context.TryGetCurrentSetting("sqlite_all_varchar", sqlite_all_varchar) && !sqlite_all_varchar.IsNull()) {
 		result->all_varchar = BooleanValue::Get(sqlite_all_varchar);
 	}
 	db.GetTableInfo(result->table_name, columns, constraints, result->all_varchar);

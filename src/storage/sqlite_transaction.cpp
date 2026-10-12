@@ -197,7 +197,8 @@ optional_ptr<CatalogEntry> SQLiteTransaction::GetCatalogEntry(const string &entr
 		CreateTableInfo info(sqlite_catalog.GetMainSchema(), Identifier(entry_name));
 		bool all_varchar = false;
 		Value sqlite_all_varchar;
-		if (context.lock()->TryGetCurrentSetting("sqlite_all_varchar", sqlite_all_varchar)) {
+		if (context.lock()->TryGetCurrentSetting("sqlite_all_varchar", sqlite_all_varchar) &&
+		    !sqlite_all_varchar.IsNull()) {
 			all_varchar = BooleanValue::Get(sqlite_all_varchar);
 		}
 		GetDB().GetTableInfo(entry_name, info.columns, info.constraints, all_varchar);
