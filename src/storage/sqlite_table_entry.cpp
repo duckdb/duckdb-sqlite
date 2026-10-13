@@ -55,12 +55,11 @@ TableFunction SQLiteTableEntry::GetScanFunction(ClientContext &context, unique_p
 		disable_multithreaded_scans = BooleanValue::Get(disable_multithreaded_scans_val);
 	}
 
-	bool use_global_db =
-	    !transaction.IsReadOnly() || sqlite_catalog.InMemory() || threads <= 1 || disable_multithreaded_scans;
+	bool use_global_db = !transaction.IsReadOnly() || !context.transaction.IsAutoCommit() ||
+	                     sqlite_catalog.InMemory() || threads <= 1 || disable_multithreaded_scans;
 
 	if (use_global_db) {
-		// for in-memory databases or if we have transaction-local changes we can
-		// only do a single-threaded scan using the transaction's connection object
+		// only the transaction's connection sees its changes and its snapshot, in-memory databases have no other
 		result->catalog_name = sqlite_catalog.GetName();
 		result->rows_per_group = optional_idx();
 	}
