@@ -14,6 +14,7 @@ duckdb_extension_load(tpch)
 if(NOT EMSCRIPTEN)
     duckdb_extension_load(httpfs
         GIT_URL https://github.com/duckdb/duckdb-httpfs
-        GIT_TAG 3f81d9749e538adc6e4882616fb2c9966e0cb0dd
+        GIT_TAG 23b865d8350660a0ca4f18884634acae17b8dc09
+        APPLY_PATCHES
     )
 endif()
