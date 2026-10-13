@@ -59,6 +59,8 @@ public:
 	vector<IndexInfo> GetIndexInfo(const string &table_name);
 
 	static void DebugSetPrintQueries(bool print);
+	//! Throws if the file access settings do not allow opening the given local database file
+	static void VerifyCanAccessLocalFile(ClientContext &context, const string &path);
 
 	bool IsOpen();
 	void Close();

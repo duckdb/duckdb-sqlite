@@ -7,6 +7,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/config.hpp"
 #include "sqlite_db.hpp"
 #include "sqlite_stmt.hpp"
 #include "sqlite_duckdb_vfs_cache.hpp"
@@ -182,7 +183,20 @@ SQLiteDB SQLiteDB::Open(const string &path, const SQLiteOpenOptions &options, Cl
 	if (SQLiteDuckDBCacheVFS::CanHandlePath(path)) {
 		return OpenWithVFS(path, options, context, is_shared);
 	}
+	VerifyCanAccessLocalFile(context, path);
 	return OpenLocal(path, options, is_shared);
+}
+
+void SQLiteDB::VerifyCanAccessLocalFile(ClientContext &context, const string &path) {
+	if (path == ":memory:" || SQLiteDuckDBCacheVFS::CanHandlePath(path)) {
+		// in-memory databases do not access files, and the caching VFS goes through DuckDB's FileSystem
+		return;
+	}
+	// native SQLite opens local files itself, so check the file access settings of DuckDB here
+	if (!DBConfig::GetConfig(context).CanAccessFile(path, FileType::FILE_TYPE_REGULAR)) {
+		throw PermissionException("Cannot access file \"%s\" - file system operations are disabled by configuration",
+		                          path);
+	}
 }
 
 bool SQLiteDB::TryPrepare(const string &query, SQLiteStatement &stmt) {

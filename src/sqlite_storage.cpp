@@ -2,6 +2,7 @@
 
 #include "sqlite3.h"
 #include "sqlite_utils.hpp"
+#include "sqlite_db.hpp"
 #include "sqlite_storage.hpp"
 #include "storage/sqlite_catalog.hpp"
 #include "storage/sqlite_transaction_manager.hpp"
@@ -27,6 +28,7 @@ static unique_ptr<Catalog> SQLiteAttach(optional_ptr<StorageExtensionInfo> stora
 			throw NotImplementedException("Unsupported parameter for SQLite Attach: %s", entry.first);
 		}
 	}
+	SQLiteDB::VerifyCanAccessLocalFile(context, info.path);
 	return make_uniq<SQLiteCatalog>(db, info.path, std::move(options));
 }
 
