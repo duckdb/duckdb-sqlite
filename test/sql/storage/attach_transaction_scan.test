@@ -1,0 +1,38 @@
+# name: test/sql/storage/attach_transaction_scan.test
+# description: Scans in a transaction read the snapshot of the transaction
+# group: [storage]
+
+require sqlite_scanner
+
+statement ok
+SET threads = 4
+
+statement ok
+ATTACH '{TEST_DIR}/attach_transaction_scan.db' AS s (TYPE SQLITE, JOURNAL_MODE 'WAL')
+
+statement ok
+CREATE TABLE s.big AS SELECT range AS i, 0 AS v FROM range(500000)
+
+statement ok con1
+BEGIN
+
+query I con1
+SELECT sum(v) FROM s.big
+----
+0
+
+statement ok con2
+UPDATE s.big SET v = 1 WHERE i = 400000
+
+query I con1
+SELECT sum(v) FROM s.big
+----
+0
+
+statement ok con1
+COMMIT
+
+query I con1
+SELECT sum(v) FROM s.big
+----
+1
