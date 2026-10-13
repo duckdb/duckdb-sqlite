@@ -58,6 +58,22 @@ LogicalType SQLiteUtils::ToSQLiteType(const LogicalType &input) {
 	}
 }
 
+const char *SQLiteUtils::ToSQLiteOperator(const string &duckdb_operator) {
+	if (duckdb_operator == "~~" || duckdb_operator == "~~*") {
+		return "LIKE";
+	}
+	if (duckdb_operator == "!~~" || duckdb_operator == "!~~*") {
+		return "NOT LIKE";
+	}
+	if (duckdb_operator == "~~~") {
+		return "GLOB";
+	}
+	if (duckdb_operator == "!~~~") {
+		return "NOT GLOB";
+	}
+	return nullptr;
+}
+
 LogicalType SQLiteUtils::TypeToLogicalType(const string &sqlite_type) {
 	// type affinity rules are taken from here:
 	// https://www.sqlite.org/datatype3.html

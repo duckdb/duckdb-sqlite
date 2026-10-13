@@ -13,6 +13,8 @@
 #include "duckdb/parser/parsed_data/alter_table_info.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
+#include "duckdb/parser/expression/function_expression.hpp"
+#include "duckdb/parser/statement/select_statement.hpp"
 
 namespace duckdb {
 
@@ -69,6 +71,17 @@ optional_ptr<CatalogEntry> SQLiteSchemaEntry::CreateFunction(CatalogTransaction 
 	throw BinderException("SQLite databases do not support creating functions");
 }
 
+void RewriteDuckDBOperatorsForSQLite(ParsedExpression &expr) {
+	if (expr.GetExpressionClass() == ExpressionClass::FUNCTION) {
+		auto &func = expr.Cast<FunctionExpression>();
+		auto *sqlite_op = SQLiteUtils::ToSQLiteOperator(func.FunctionName().GetIdentifierName());
+		if (sqlite_op) {
+			func.SetFunctionName(sqlite_op);
+		}
+	}
+	ParsedExpressionIterator::EnumerateChildren(expr, RewriteDuckDBOperatorsForSQLite);
+}
+
 void UnqualifyColumnReferences(ParsedExpression &expr) {
 	if (expr.GetExpressionType() == ExpressionType::COLUMN_REF) {
 		auto &colref = expr.Cast<ColumnRefExpression>();
@@ -98,6 +111,7 @@ string GetCreateIndexSQL(CreateIndexInfo &info, TableCatalogEntry &tbl) {
 			sql += ", ";
 		}
 		UnqualifyColumnReferences(*info.parsed_expressions[i]);
+		RewriteDuckDBOperatorsForSQLite(*info.parsed_expressions[i]);
 		sql += info.parsed_expressions[i]->ToString();
 	}
 	sql += ")";
@@ -131,7 +145,10 @@ string GetCreateViewSQL(CreateViewInfo &info) {
 		sql += ") ";
 	}
 	sql += "AS ";
-	sql += info.query->ToString();
+	auto sqlite_query = unique_ptr_cast<SQLStatement, SelectStatement>(info.query->Copy());
+	ParsedExpressionIterator::EnumerateQueryNodeChildren(
+	    *sqlite_query->node, [](unique_ptr<ParsedExpression> &child) { RewriteDuckDBOperatorsForSQLite(*child); });
+	sql += sqlite_query->ToString();
 	return sql;
 }
 
