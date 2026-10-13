@@ -1,0 +1,70 @@
+# name: test/sql/storage/attach_all_varchar_reset.test
+# description: sqlite_all_varchar is false after RESET and when set to NULL, for attached tables and sqlite_scan
+# group: [storage]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '__TEST_DIR__/all_varchar_reset.db' AS s (TYPE sqlite)
+
+statement ok
+CREATE TABLE s.t (i INTEGER)
+
+statement ok
+INSERT INTO s.t VALUES (1)
+
+statement ok
+SET sqlite_all_varchar = true
+
+statement ok
+RESET sqlite_all_varchar
+
+query I
+SELECT current_setting('sqlite_all_varchar')
+----
+false
+
+query II
+SELECT i, typeof(i) FROM s.t
+----
+1	BIGINT
+
+query II
+SELECT i, typeof(i) FROM sqlite_scan('__TEST_DIR__/all_varchar_reset.db', 't')
+----
+1	BIGINT
+
+statement ok
+SET sqlite_all_varchar = NULL
+
+statement ok
+DETACH s
+
+statement ok
+ATTACH '__TEST_DIR__/all_varchar_reset.db' AS s (TYPE sqlite)
+
+query II
+SELECT i, typeof(i) FROM s.t
+----
+1	BIGINT
+
+query II
+SELECT i, typeof(i) FROM sqlite_scan('__TEST_DIR__/all_varchar_reset.db', 't')
+----
+1	BIGINT
+
+statement ok
+SET GLOBAL sqlite_all_varchar = true
+
+statement ok
+RESET GLOBAL sqlite_all_varchar
+
+query I con2
+SELECT current_setting('sqlite_all_varchar')
+----
+false
+
+query II con2
+SELECT i, typeof(i) FROM sqlite_scan('__TEST_DIR__/all_varchar_reset.db', 't')
+----
+1	BIGINT
