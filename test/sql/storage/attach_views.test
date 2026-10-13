@@ -63,3 +63,24 @@ query I
 SELECT "column "" column '' column" FROM "table "" table '' table"
 ----
 3
+
+# LIKE must be stored as SQLite syntax, not Postgres ~~
+statement ok
+CREATE TABLE foo(baz TEXT);
+
+statement ok
+INSERT INTO foo VALUES ('hello');
+
+statement ok
+CREATE VIEW v_like AS SELECT * FROM foo WHERE baz LIKE '%';
+
+query I
+SELECT * FROM v_like
+----
+hello
+
+query II
+SELECT contains(sql, '~~'), contains(upper(sql), 'LIKE')
+FROM sqlite_query(s, 'SELECT sql FROM sqlite_master WHERE name=''v_like''')
+----
+false	true

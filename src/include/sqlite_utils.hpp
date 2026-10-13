@@ -21,6 +21,8 @@ public:
 	static string SanitizeString(const string &table_name);
 	static string SanitizeIdentifier(const string &table_name);
 	static LogicalType ToSQLiteType(const LogicalType &input);
+	//! DuckDB ToString() operator name -> SQLite keyword, or nullptr if unchanged.
+	static const char *ToSQLiteOperator(const string &duckdb_operator);
 	string ToSQLiteTypeAlias(const LogicalType &input);
 
 	static string EscapeQuotes(const string &text, char quote);
