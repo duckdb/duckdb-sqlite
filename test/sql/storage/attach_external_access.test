@@ -1,0 +1,38 @@
+# name: test/sql/storage/attach_external_access.test
+# description: Opening local SQLite databases checks enable_external_access and allowed_directories
+# group: [storage]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEMP_DIR}/external_access.db' AS s (TYPE SQLITE);
+
+statement ok
+CREATE TABLE s.t AS SELECT 42 AS i;
+
+statement ok
+DETACH s;
+
+statement ok
+SET allowed_directories=['data/db'];
+
+statement ok
+SET enable_external_access=false;
+
+statement error
+ATTACH '{TEMP_DIR}/external_access.db' AS s (TYPE SQLITE);
+----
+<REGEX>:.*Permission Error.*
+
+statement error
+SELECT * FROM sqlite_scan('{TEMP_DIR}/external_access.db', 't');
+----
+<REGEX>:.*Permission Error.*
+
+# files in an allowed directory can still be opened
+statement ok
+ATTACH 'data/db/borked.db' AS allowed (TYPE SQLITE, READ_ONLY);
+
+# in-memory databases do not access files
+statement ok
+ATTACH ':memory:' AS mem (TYPE SQLITE);
