@@ -1,0 +1,50 @@
+# name: test/sql/storage/attach_commit_busy.test
+# description: A COMMIT that fails because the database is locked releases the SQLite transaction and its locks
+# group: [storage]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/attach_commit_busy.db' AS s (TYPE SQLITE, BUSY_TIMEOUT 100)
+
+statement ok
+CREATE TABLE s.w (i INTEGER)
+
+statement ok
+INSERT INTO s.w VALUES (0)
+
+# a reader holds a read transaction on the database
+statement ok con2
+BEGIN
+
+query I con2
+SELECT count(*) FROM s.w
+----
+1
+
+statement ok con1
+BEGIN
+
+statement ok con1
+INSERT INTO s.w VALUES (1)
+
+statement error con1
+COMMIT
+----
+database is locked
+
+statement ok con2
+COMMIT
+
+query I con1
+SELECT count(*) FROM s.w
+----
+1
+
+statement ok con1
+INSERT INTO s.w VALUES (2)
+
+query I con1
+SELECT count(*) FROM s.w
+----
+2
