@@ -1,0 +1,69 @@
+# name: test/sql/storage/attach_sqlite_keyword_names.test
+# description: Names that only SQLite reserves are quoted in the SQL sent to SQLite
+# group: [storage]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '__TEST_DIR__/attach_sqlite_keyword_names.db' AS s (TYPE SQLITE)
+
+statement ok
+CREATE TABLE s.t (id INTEGER, autoincrement INTEGER)
+
+statement ok
+INSERT INTO s.t VALUES (1, 2)
+
+statement ok
+UPDATE s.t SET autoincrement = 3
+
+statement ok
+CREATE TABLE s.u (id INTEGER)
+
+statement ok
+ALTER TABLE s.u ADD COLUMN autoincrement INTEGER
+
+statement ok
+ALTER TABLE s.u RENAME COLUMN id TO "references"
+
+statement ok
+INSERT INTO s.u VALUES (4, 5)
+
+statement ok
+ALTER TABLE s.u DROP COLUMN autoincrement
+
+statement ok
+CREATE TABLE s.w (message VARCHAR DEFAULT 'indexed BIGINT', indexed BIGINT NOT NULL, autoincrement INTEGER UNIQUE, PRIMARY KEY (indexed, autoincrement))
+
+statement ok
+INSERT INTO s.w (indexed, autoincrement) VALUES (7, 8)
+
+statement error
+INSERT INTO s.w (indexed, autoincrement) VALUES (9, 8)
+----
+UNIQUE
+
+query III
+SELECT message, indexed, autoincrement FROM s.w
+----
+indexed BIGINT	7	8
+
+statement ok
+CREATE TABLE s.autoincrement (i INTEGER)
+
+statement ok
+INSERT INTO s.autoincrement VALUES (6)
+
+query II
+SELECT id, autoincrement FROM s.t
+----
+1	3
+
+query I
+SELECT "references" FROM s.u
+----
+4
+
+query I
+SELECT i FROM s.autoincrement
+----
+6
