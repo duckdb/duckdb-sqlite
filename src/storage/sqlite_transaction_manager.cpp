@@ -18,9 +18,19 @@ Transaction &SQLiteTransactionManager::StartTransaction(ClientContext &context) 
 
 ErrorData SQLiteTransactionManager::CommitTransaction(ClientContext &context, Transaction &transaction) {
 	auto &sqlite_transaction = transaction.Cast<SQLiteTransaction>();
-	sqlite_transaction.Commit();
+	ErrorData error;
+	try {
+		sqlite_transaction.Commit();
+	} catch (std::exception &ex) {
+		error = ErrorData(ex);
+		// SQLite keeps the transaction and its locks when COMMIT fails
+		try {
+			sqlite_transaction.Rollback();
+		} catch (std::exception &) {
+		}
+	}
 	ExtractAndCloseAfterUnlock(transaction);
-	return ErrorData();
+	return error;
 }
 
 void SQLiteTransactionManager::RollbackTransaction(Transaction &transaction) {
