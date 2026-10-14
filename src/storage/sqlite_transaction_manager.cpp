@@ -23,7 +23,7 @@ ErrorData SQLiteTransactionManager::CommitTransaction(ClientContext &context, Tr
 		sqlite_transaction.Commit();
 	} catch (std::exception &ex) {
 		error = ErrorData(ex);
-		// SQLite keeps the transaction and its locks when COMMIT fails
+		// SQLite can keep the transaction and its locks when COMMIT fails
 		try {
 			sqlite_transaction.Rollback();
 		} catch (std::exception &) {
