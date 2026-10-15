@@ -153,7 +153,9 @@ string SQLiteUtils::WriteQuotedAndEscaped(const string &text, char quote) {
 }
 
 string SQLiteUtils::WriteOptionallyQuoted(const string &text, char quote, bool allow_caps) {
-	if (!KeywordHelper::RequiresQuotes(text, allow_caps)) {
+	// SQLite has keywords that DuckDB does not, such as autoincrement
+	if (!KeywordHelper::RequiresQuotes(text, allow_caps) &&
+	    !sqlite3_keyword_check(text.c_str(), UnsafeNumericCast<int>(text.size()))) {
 		return text;
 	}
 	return SQLiteUtils::WriteQuotedAndEscaped(text, quote);

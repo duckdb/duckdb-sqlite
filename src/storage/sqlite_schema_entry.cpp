@@ -28,6 +28,66 @@ SQLiteTransaction &GetSQLiteTransaction(CatalogTransaction transaction) {
 	return transaction.transaction->Cast<SQLiteTransaction>();
 }
 
+//! As TableCatalogEntry::ColumnsToSQL, with the names quoted for SQLite, which has keywords that DuckDB does not
+static string SQLiteColumnsToSQL(const ColumnList &columns, const vector<unique_ptr<Constraint>> &constraints) {
+	logical_index_set_t not_null_columns;
+	logical_index_set_t unique_columns;
+	logical_index_set_t pk_columns;
+	identifier_set_t multi_key_pks;
+	vector<string> extra_constraints;
+	for (auto &constraint : constraints) {
+		if (constraint->type == ConstraintType::NOT_NULL) {
+			not_null_columns.insert(constraint->Cast<NotNullConstraint>().index);
+		} else if (constraint->type == ConstraintType::UNIQUE) {
+			auto &unique = constraint->Cast<UniqueConstraint>();
+			if (unique.HasIndex()) {
+				(unique.IsPrimaryKey() ? pk_columns : unique_columns).insert(unique.GetIndex());
+				continue;
+			}
+			vector<string> names;
+			for (auto &name : unique.GetColumnNames()) {
+				if (unique.IsPrimaryKey()) {
+					multi_key_pks.insert(name);
+				}
+				names.push_back(SQLiteUtils::WriteOptionallyQuoted(name.GetIdentifierName()));
+			}
+			extra_constraints.push_back(StringUtil::Format("%s(%s)", unique.IsPrimaryKey() ? "PRIMARY KEY" : "UNIQUE",
+			                                               StringUtil::Join(names, ", ")));
+		} else if (constraint->type == ConstraintType::FOREIGN_KEY) {
+			auto &foreign_key = constraint->Cast<ForeignKeyConstraint>();
+			if (foreign_key.info.type == ForeignKeyType::FK_TYPE_FOREIGN_KEY_TABLE ||
+			    foreign_key.info.type == ForeignKeyType::FK_TYPE_SELF_REFERENCE_TABLE) {
+				extra_constraints.push_back(constraint->ToString());
+			}
+		} else {
+			extra_constraints.push_back(constraint->ToString());
+		}
+	}
+	vector<string> definitions;
+	for (auto &column : columns.Logical()) {
+		auto &name = column.Name().GetIdentifierName();
+		// the type, collation and default follow the name that DuckDB writes
+		auto definition = SQLiteUtils::WriteOptionallyQuoted(name) +
+		                  column.ToSQLString().substr(SQLIdentifier::ToString(name).size());
+		bool is_single_key_pk = pk_columns.count(column.Logical()) > 0;
+		bool is_multi_key_pk = multi_key_pks.count(column.Name()) > 0;
+		if (not_null_columns.count(column.Logical()) && !is_single_key_pk && !is_multi_key_pk) {
+			definition += " NOT NULL";
+		}
+		if (is_single_key_pk) {
+			definition += " PRIMARY KEY";
+		}
+		if (unique_columns.count(column.Logical())) {
+			definition += " UNIQUE";
+		}
+		definitions.push_back(std::move(definition));
+	}
+	for (auto &extra_constraint : extra_constraints) {
+		definitions.push_back(extra_constraint);
+	}
+	return "(" + StringUtil::Join(definitions, ", ") + ")";
+}
+
 string GetCreateTableSQL(CreateTableInfo &info) {
 	for (idx_t i = 0; i < info.columns.LogicalColumnCount(); i++) {
 		auto &col = info.columns.GetColumnMutable(LogicalIndex(i));
@@ -40,7 +100,7 @@ string GetCreateTableSQL(CreateTableInfo &info) {
 		ss << "IF NOT EXISTS ";
 	}
 	ss << SQLiteUtils::WriteOptionallyQuoted(info.GetTableName().GetIdentifierName());
-	ss << TableCatalogEntry::ColumnsToSQL(info.columns, info.constraints);
+	ss << SQLiteColumnsToSQL(info.columns, info.constraints);
 	ss << ";";
 	return ss.str();
 }
