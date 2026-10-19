@@ -15,6 +15,5 @@ if(NOT EMSCRIPTEN)
     duckdb_extension_load(httpfs
         GIT_URL https://github.com/duckdb/duckdb-httpfs
         GIT_TAG 740d974694058ab1ecd35a5f2f5dfca0d0977b5d # main 2026-10-18 pin
-        APPLY_PATCHES
     )
 endif()
