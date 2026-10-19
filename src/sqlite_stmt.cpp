@@ -66,7 +66,7 @@ void SQLiteStatement::Close() {
 	stmt = nullptr;
 }
 
-void SQLiteStatement::CheckTypeMatches(const SqliteBindData &bind_data, sqlite3_value *val, int sqlite_column_type,
+void SQLiteStatement::CheckTypeMatches(const SqliteBindData &bind_data, int sqlite_column_type,
                                        int expected_type, idx_t col_idx) {
 	D_ASSERT(stmt);
 	if (bind_data.all_varchar) {
@@ -75,7 +75,8 @@ void SQLiteStatement::CheckTypeMatches(const SqliteBindData &bind_data, sqlite3_
 	}
 	if (sqlite_column_type != expected_type) {
 		auto column_name = string(sqlite3_column_name(stmt, int(col_idx)));
-		auto value_as_text = string((char *)sqlite3_value_text(val));
+		auto text = sqlite3_column_text(stmt, int(col_idx));
+		auto value_as_text = text ? string((const char *)text) : string();
 		auto message = "Invalid type in column \"" + column_name + "\": column was declared as " +
 		               SQLiteUtils::TypeToString(expected_type) + ", found \"" + value_as_text + "\" of type \"" +
 		               SQLiteUtils::TypeToString(sqlite_column_type) + "\" instead.";
@@ -85,10 +86,11 @@ void SQLiteStatement::CheckTypeMatches(const SqliteBindData &bind_data, sqlite3_
 	}
 }
 
-void SQLiteStatement::CheckTypeIsFloatOrInteger(sqlite3_value *val, int sqlite_column_type, idx_t col_idx) {
+void SQLiteStatement::CheckTypeIsFloatOrInteger(int sqlite_column_type, idx_t col_idx) {
 	if (sqlite_column_type != SQLITE_FLOAT && sqlite_column_type != SQLITE_INTEGER) {
 		auto column_name = string(sqlite3_column_name(stmt, int(col_idx)));
-		auto value_as_text = string((const char *)sqlite3_value_text(val));
+		auto text = sqlite3_column_text(stmt, int(col_idx));
+		auto value_as_text = text ? string((const char *)text) : string();
 		auto message = "Invalid type in column \"" + column_name + "\": expected float or integer, found \"" +
 		               value_as_text + "\" of type \"" + SQLiteUtils::TypeToString(sqlite_column_type) + "\" instead.";
 		message += "\n* SET sqlite_all_varchar=true to load all columns as VARCHAR "
