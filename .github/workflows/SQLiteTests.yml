@@ -4,37 +4,36 @@ on:
   pull_request:
   repository_dispatch:
   merge_group:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' || github.sha }}
+  cancel-in-progress: true
 
 jobs:
 
   format-check:
     name: Format Check
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'duckdb' && 'namespace-profile-linux-slim' || 'ubuntu-latest' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: 'true'
-
-      - name: Install
-        run: |
-          pip3 install           \
+      - run: |
+          python -m pip install --user --break-system-packages \
             black==25.1.0        \
             clang_format==11.0.1 \
             cmake-format==0.6.13
-
-      - name: Format Check
-        run: |
+          export PATH=~/.local/bin:$PATH
           python -m pip show black
           python -m pip show cmake_format
           python -m pip show clang_format
+          which clang-format
           clang-format --version
-          clang-format --dump-config
           make format-check
 
   linux:
     name: Linux (amd64)
     needs: format-check
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'duckdb' && 'namespace-profile-linux-x64' || 'ubuntu-latest' }}
     env:
       GEN: ninja
       CC: 'ccache gcc'
@@ -49,8 +48,8 @@ jobs:
 
     - name: Install required ubuntu packages
       run: |
-        echo "set man-db/auto-update false" | sudo debconf-communicate
-        sudo dpkg-reconfigure man-db
+        echo "set man-db/auto-update false" | sudo debconf-communicate || true
+        sudo dpkg-reconfigure man-db || true
         sudo apt-get update -y -q -o=Dpkg::Use-Pty=0
         sudo apt-get install -y -q -o=Dpkg::Use-Pty=0 \
           build-essential \
@@ -118,7 +117,7 @@ jobs:
   linux-sanitized:
     name: Linux ${{ matrix.sanitizer.name }} (amd64)
     needs: linux
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'duckdb' && 'namespace-profile-linux-x64' || 'ubuntu-latest' }}
 
     strategy:
       matrix:
@@ -129,7 +128,6 @@ jobs:
           threadsan_enabled: 1
 
     env:
-      CMAKE_BUILD_PARALLEL_LEVEL: 2
       GEN: ninja
       CC: 'ccache gcc'
       CXX: 'ccache g++'
@@ -153,6 +151,8 @@ jobs:
 
     - name: Install required ubuntu packages
       run: |
+        echo "set man-db/auto-update false" | sudo debconf-communicate || true
+        sudo dpkg-reconfigure man-db || true
         sudo apt-get update -y -q -o=Dpkg::Use-Pty=0
         sudo apt-get install -y -q -o=Dpkg::Use-Pty=0 \
           build-essential \
