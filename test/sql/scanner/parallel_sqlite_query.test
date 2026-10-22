@@ -1,0 +1,59 @@
+# name: test/sql/scanner/parallel_sqlite_query.test
+# description: parallel sqlite_query scans of one database read columns through protected accessors
+# group: [scanner]
+
+require sqlite_scanner
+
+statement ok
+SET threads=12;
+
+statement ok
+SET preserve_insertion_order=false;
+
+statement ok
+ATTACH ':memory:' AS meta (TYPE sqlite);
+
+statement ok
+CREATE TABLE meta.t AS SELECT i FROM range(20000) r(i);
+
+loop repeat 0 100
+
+query I
+SELECT sum(v)
+FROM (
+    SELECT i::BIGINT AS v FROM sqlite_query('meta','SELECT i FROM t WHERE i >= 0')
+    UNION ALL
+    SELECT i::BIGINT AS v FROM sqlite_query('meta','SELECT i FROM t WHERE i >= 1')
+    UNION ALL
+    SELECT i::BIGINT AS v FROM sqlite_query('meta','SELECT i FROM t WHERE i >= 2')
+    UNION ALL
+    SELECT i::BIGINT AS v FROM sqlite_query('meta','SELECT i FROM t WHERE i >= 3')
+    UNION ALL
+    SELECT i::BIGINT AS v FROM sqlite_query('meta','SELECT i FROM t WHERE i >= 4')
+    UNION ALL
+    SELECT i::BIGINT AS v FROM sqlite_query('meta','SELECT i FROM t WHERE i >= 5')
+    UNION ALL
+    SELECT i::BIGINT AS v FROM sqlite_query('meta','SELECT i FROM t WHERE i >= 6')
+    UNION ALL
+    SELECT i::BIGINT AS v FROM sqlite_query('meta','SELECT i FROM t WHERE i >= 7')
+    UNION ALL
+    SELECT i::BIGINT AS v FROM sqlite_query('meta','SELECT i FROM t WHERE i >= 8')
+    UNION ALL
+    SELECT i::BIGINT AS v FROM sqlite_query('meta','SELECT i FROM t WHERE i >= 9')
+    UNION ALL
+    SELECT i::BIGINT AS v FROM sqlite_query('meta','SELECT i FROM t WHERE i >= 10')
+    UNION ALL
+    SELECT i::BIGINT AS v FROM sqlite_query('meta','SELECT i FROM t WHERE i >= 11')
+    UNION ALL
+    SELECT i::BIGINT AS v FROM sqlite_query('meta','SELECT i FROM t WHERE i >= 12')
+    UNION ALL
+    SELECT i::BIGINT AS v FROM sqlite_query('meta','SELECT i FROM t WHERE i >= 13')
+    UNION ALL
+    SELECT i::BIGINT AS v FROM sqlite_query('meta','SELECT i FROM t WHERE i >= 14')
+    UNION ALL
+    SELECT i::BIGINT AS v FROM sqlite_query('meta','SELECT i FROM t WHERE i >= 15')
+);
+----
+3199839440
+
+endloop
