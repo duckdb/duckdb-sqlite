@@ -13,10 +13,8 @@
 
 namespace duckdb {
 
-SQLiteInsert::SQLiteInsert(PhysicalPlan &physical_plan, LogicalOperator &op, TableCatalogEntry &table,
-                           physical_index_vector_t<idx_t> column_index_map_p)
-    : PhysicalOperator(physical_plan, PhysicalOperatorType::EXTENSION, op.types, 1), table(&table), schema(nullptr),
-      column_index_map(std::move(column_index_map_p)) {
+SQLiteInsert::SQLiteInsert(PhysicalPlan &physical_plan, LogicalOperator &op, TableCatalogEntry &table)
+    : PhysicalOperator(physical_plan, PhysicalOperatorType::EXTENSION, op.types, 1), table(&table), schema(nullptr) {
 }
 
 SQLiteInsert::SQLiteInsert(PhysicalPlan &physical_plan, LogicalOperator &op, SchemaCatalogEntry &schema,
@@ -30,44 +28,30 @@ SQLiteInsert::SQLiteInsert(PhysicalPlan &physical_plan, LogicalOperator &op, Sch
 //===--------------------------------------------------------------------===//
 class SQLiteInsertGlobalState : public GlobalSinkState {
 public:
-	explicit SQLiteInsertGlobalState(ClientContext &context) : insert_count(0) {
+	explicit SQLiteInsertGlobalState(ClientContext &context) : insert_count(0), column_count(0) {
 	}
 
 	SQLiteStatement statement;
 	idx_t insert_count;
+	//! The number of columns in the INSERT statement
+	idx_t column_count;
 };
 
-string GetInsertSQL(const SQLiteInsert &insert, SQLiteTableEntry *entry) {
+//! The input contains all physical columns of the table, with defaults filled in for unspecified columns
+//! SQLite generated columns are hidden from "PRAGMA table_info", so they are not part of the table entry
+string GetInsertSQL(SQLiteTableEntry *entry, idx_t &column_count) {
 	string result;
 	result = "INSERT INTO " + SQLiteUtils::WriteOptionallyQuoted(entry->name.GetIdentifierName());
-	auto &columns = entry->GetColumns();
-	idx_t column_count;
-	if (!insert.column_index_map.empty()) {
-		column_count = 0;
-		result += " (";
-		vector<PhysicalIndex> column_indexes;
-		column_indexes.resize(columns.LogicalColumnCount(), PhysicalIndex(DConstants::INVALID_INDEX));
-		for (idx_t c = 0; c < insert.column_index_map.size(); c++) {
-			auto column_index = PhysicalIndex(c);
-			auto mapped_index = insert.column_index_map[column_index];
-			if (mapped_index == DConstants::INVALID_INDEX) {
-				// column not specified
-				continue;
-			}
-			column_indexes[mapped_index] = column_index;
-			column_count++;
+	result += " (";
+	column_count = 0;
+	for (auto &col : entry->GetColumns().Physical()) {
+		if (column_count > 0) {
+			result += ", ";
 		}
-		for (idx_t c = 0; c < column_count; c++) {
-			if (c > 0) {
-				result += ", ";
-			}
-			auto &col = columns.GetColumn(column_indexes[c]);
-			result += SQLiteUtils::WriteOptionallyQuoted(col.GetName().GetIdentifierName());
-		}
-		result += ")";
-	} else {
-		column_count = columns.LogicalColumnCount();
+		result += SQLiteUtils::WriteOptionallyQuoted(col.GetName().GetIdentifierName());
+		column_count++;
 	}
+	result += ")";
 	result += " VALUES (";
 	for (idx_t i = 0; i < column_count; i++) {
 		if (i > 0) {
@@ -90,7 +74,7 @@ unique_ptr<GlobalSinkState> SQLiteInsert::GetGlobalSinkState(ClientContext &cont
 	}
 	auto &transaction = SQLiteTransaction::Get(context, insert_table->catalog);
 	auto result = make_uniq<SQLiteInsertGlobalState>(context);
-	result->statement = transaction.GetDB().Prepare(GetInsertSQL(*this, insert_table));
+	result->statement = transaction.GetDB().Prepare(GetInsertSQL(insert_table, result->column_count));
 	return std::move(result);
 }
 
@@ -99,6 +83,10 @@ unique_ptr<GlobalSinkState> SQLiteInsert::GetGlobalSinkState(ClientContext &cont
 //===--------------------------------------------------------------------===//
 SinkResultType SQLiteInsert::Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const {
 	auto &gstate = sink_state->Cast<SQLiteInsertGlobalState>();
+	if (chunk.ColumnCount() != gstate.column_count) {
+		throw InternalException("SQLiteInsert: expected %llu input columns, got %llu", gstate.column_count,
+		                        chunk.ColumnCount());
+	}
 	chunk.Flatten();
 	auto &stmt = gstate.statement;
 	for (idx_t r = 0; r < chunk.size(); r++) {
@@ -190,9 +178,11 @@ PhysicalOperator &SQLiteCatalog::PlanInsert(ClientContext &context, PhysicalPlan
 		throw BinderException("ON CONFLICT clause not yet supported for insertion into SQLite table");
 	}
 
-	D_ASSERT(plan);
+	if (!plan) {
+		throw InternalException("SQLiteCatalog::PlanInsert: insert without a child plan");
+	}
 	auto &inner_plan = AddCastToSQLiteTypes(context, planner, *plan);
-	auto &insert = planner.Make<SQLiteInsert>(op, op.table, op.column_index_map);
+	auto &insert = planner.Make<SQLiteInsert>(op, op.table);
 	insert.children.push_back(inner_plan);
 	return insert;
 }
