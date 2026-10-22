@@ -9,25 +9,46 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' || github.sha }}
   cancel-in-progress: true
 
+permissions:
+  actions: read
+  contents: read
+  packages: read
+
 jobs:
-  duckdb-stable-build:
-    name: Build extension binaries
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
+  prepare:
+    name: Prepare
+    runs-on: ${{ github.repository_owner == 'duckdb' && 'namespace-profile-linux-slim' || 'ubuntu-slim' }}
+    outputs:
+      runners: ${{ steps.runners.outputs.runners }}
+    steps:
+      - name: Detect runners
+        id: runners
+        uses: duckdb/duckdb-ci/detect-runners@main
+
+  build:
+    name: Build extension
+    uses: duckdb/extension-ci-tools/.github/workflows/build.yml@main
+    needs:
+      - prepare
     with:
-      extension_name: sqlite_scanner
-      ci_tools_version: main
+      groups: |
+        main:
+          config: extension_config.cmake
+          toolchain: main
       exclude_archs: 'windows_amd64_mingw'
       opt_in_archs: 'linux_amd64_musl;linux_arm64_musl;windows_arm64'
+      runners: ${{ needs.prepare.outputs.runners }}
 
-  duckdb-stable-deploy:
-    name: Deploy extension binaries
-    needs: duckdb-stable-build
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_deploy.yml@main
+  deploy:
+    name: Deploy extension
+    if: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
+    needs:
+      - build
+    uses: duckdb/extension-ci-tools/.github/workflows/deploy.yml@main
     secrets: inherit
     with:
-      extension_name: sqlite_scanner
-      ci_tools_version: main
-      exclude_archs: 'windows_amd64_mingw'
-      opt_in_archs: 'linux_amd64_musl;linux_arm64_musl;windows_arm64'
+      duckdb_version: ${{ needs.build.outputs.duckdb_version }}
+      duckdb_commit: ${{ needs.build.outputs.duckdb_commit }}
+      deploy_extensions: sqlite_scanner
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
       deploy_versioned: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
