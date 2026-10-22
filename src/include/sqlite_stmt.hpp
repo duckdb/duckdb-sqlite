@@ -51,8 +51,7 @@ public:
 	idx_t GetColumnCount();
 	bool IsOpen();
 	void Close();
-	void CheckTypeMatches(const SqliteBindData &bind_data, int sqlite_column_type,
-	                      int expected_type, idx_t col_idx);
+	void CheckTypeMatches(const SqliteBindData &bind_data, int sqlite_column_type, int expected_type, idx_t col_idx);
 	void CheckTypeIsFloatOrInteger(int sqlite_column_type, idx_t col_idx);
 	void Reset();
 	void ClearBindings();
