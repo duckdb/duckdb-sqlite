@@ -76,6 +76,13 @@ private:
 	bool in_memory;
 	//! In-memory database - if any
 	SQLiteDB in_memory_db;
+	//! For a local on-disk database: a handle held open for the lifetime of the catalog.
+	//! Every transaction opens and closes its own handle; without this one, each of those
+	//! closes is "the last connection" and SQLite runs a WAL checkpoint-on-close (fsync of
+	//! the WAL and the main file, unlink of -wal/-shm) on every single transaction. With it,
+	//! the per-transaction handles are never the last, SQLite's auto-checkpoint keeps the
+	//! WAL bounded, and the final checkpoint happens once, when the catalog is detached.
+	SQLiteDB anchor_db;
 	//! The lock maintaing access to the in-memory database
 	mutex in_memory_lock;
 	//! Whether or not there is any active transaction on the in-memory database

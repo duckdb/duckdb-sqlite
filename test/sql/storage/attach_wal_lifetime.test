@@ -1,0 +1,55 @@
+# name: test/sql/storage/attach_wal_lifetime.test
+# description: a WAL-mode database is checkpointed once at DETACH, not after every transaction
+# group: [sqlite_storage]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '__TEST_DIR__/wal_lifetime.db' AS s (TYPE SQLITE, JOURNAL_MODE 'WAL', SYNCHRONOUS 'NORMAL')
+
+statement ok
+CREATE TABLE s.t(i INTEGER)
+
+statement ok
+INSERT INTO s.t VALUES (1)
+
+statement ok
+INSERT INTO s.t VALUES (2)
+
+statement ok
+INSERT INTO s.t VALUES (3)
+
+# every statement above ran in its own transaction and closed its own SQLite handle. The catalog
+# keeps one handle open for as long as it is attached, so none of those closes was the last
+# connection and the WAL was not checkpointed/removed after each of them.
+query I
+SELECT count(*) FROM glob('__TEST_DIR__/wal_lifetime.db-wal')
+----
+1
+
+query I
+SELECT * FROM s.t ORDER BY i
+----
+1
+2
+3
+
+statement ok
+DETACH s
+
+# the last handle closed with the catalog: SQLite ran its checkpoint-on-close and removed the WAL
+query I
+SELECT count(*) FROM glob('__TEST_DIR__/wal_lifetime.db-wal')
+----
+0
+
+statement ok
+ATTACH '__TEST_DIR__/wal_lifetime.db' AS s (TYPE SQLITE)
+
+query I
+SELECT count(*) FROM s.t
+----
+3
+
+statement ok
+DETACH s

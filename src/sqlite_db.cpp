@@ -134,8 +134,15 @@ SQLiteDB SQLiteDB::OpenLocal(const string &path, const SQLiteOpenOptions &option
 
 	ApplyBusyTimeout(result.db, options);
 
+	// Both values were validated against SQLite's keyword lists when the option was parsed, so they
+	// can be spliced into the PRAGMA as bare keywords.
 	if (!options.journal_mode.empty()) {
-		result.Execute("PRAGMA journal_mode=" + SQLiteUtils::EscapeQuotes(options.journal_mode, '\''));
+		result.Execute("PRAGMA journal_mode=" + options.journal_mode);
+	}
+	if (!options.synchronous.empty()) {
+		// synchronous is a per-connection setting (unlike journal_mode, which is persistent in WAL
+		// mode), so it has to be applied to every handle we open
+		result.Execute("PRAGMA synchronous=" + options.synchronous);
 	}
 	return result;
 }
