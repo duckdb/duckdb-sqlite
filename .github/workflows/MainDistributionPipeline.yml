@@ -50,5 +50,5 @@ jobs:
       duckdb_version: ${{ needs.build.outputs.duckdb_version }}
       duckdb_commit: ${{ needs.build.outputs.duckdb_commit }}
       deploy_extensions: sqlite_scanner
-      deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
-      deploy_versioned: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
+      deploy_latest: ${{ startsWith(github.ref, 'refs/heads/v') || github.ref == 'refs/heads/main' }}
+      deploy_versioned: ${{ startsWith(github.ref, 'refs/heads/v') || github.ref == 'refs/heads/main' }}
