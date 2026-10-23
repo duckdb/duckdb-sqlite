@@ -1,6 +1,6 @@
-# name: test/sql/scanner/http_sqlite_07_consistency.test
+# name: test/sql/http/http_sqlite_07_consistency.test
 # description: Consistency check for multiple scans
-# group: [scanner]
+# group: [http]
 
 require sqlite_scanner
 

@@ -5,7 +5,7 @@
 require sqlite_scanner
 
 statement ok
-ATTACH '__TEST_DIR__/attach_sqlite_keyword_names.db' AS s (TYPE SQLITE)
+ATTACH '{TEST_DIR}/attach_sqlite_keyword_names.db' AS s (TYPE SQLITE)
 
 statement ok
 CREATE TABLE s.t (id INTEGER, autoincrement INTEGER)
