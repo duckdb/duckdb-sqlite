@@ -11,7 +11,7 @@ duckdb_extension_load(tpch)
 
 # The remote-SQLite tests need httpfs, needs to be synchronized with the httpfs
 # config in duckdb/.github/config/extensions/httpfs.cmake
-if(NOT EMSCRIPTEN)
+if(NOT EMSCRIPTEN AND DEFINED ENV{SQLITE_ENABLE_HTTPFS_TESTS})
     duckdb_extension_load(httpfs
         GIT_URL https://github.com/duckdb/duckdb-httpfs
         GIT_TAG 740d974694058ab1ecd35a5f2f5dfca0d0977b5d # main 2026-10-18 pin
