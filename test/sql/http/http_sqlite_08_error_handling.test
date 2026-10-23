@@ -1,6 +1,6 @@
-# name: test/sql/scanner/http_sqlite_08_error_handling.test
+# name: test/sql/http/http_sqlite_08_error_handling.test
 # description: Error handling for remote SQLite databases (hermetic, via local test server)
-# group: [scanner]
+# group: [http]
 
 require sqlite_scanner
 

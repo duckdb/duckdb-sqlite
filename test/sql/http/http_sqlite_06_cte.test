@@ -1,6 +1,6 @@
-# name: test/sql/scanner/http_sqlite_06_cte.test
+# name: test/sql/http/http_sqlite_06_cte.test
 # description: CTE with remote SQLite tables
-# group: [scanner]
+# group: [http]
 
 require sqlite_scanner
 

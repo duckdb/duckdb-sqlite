@@ -5,7 +5,7 @@
 require sqlite_scanner
 
 statement ok
-ATTACH '__TEST_DIR__/all_varchar_reset.db' AS s (TYPE sqlite)
+ATTACH '{TEST_DIR}/all_varchar_reset.db' AS s (TYPE sqlite)
 
 statement ok
 CREATE TABLE s.t (i INTEGER)
@@ -30,7 +30,7 @@ SELECT i, typeof(i) FROM s.t
 1	BIGINT
 
 query II
-SELECT i, typeof(i) FROM sqlite_scan('__TEST_DIR__/all_varchar_reset.db', 't')
+SELECT i, typeof(i) FROM sqlite_scan('{TEST_DIR}/all_varchar_reset.db', 't')
 ----
 1	BIGINT
 
@@ -41,7 +41,7 @@ statement ok
 DETACH s
 
 statement ok
-ATTACH '__TEST_DIR__/all_varchar_reset.db' AS s (TYPE sqlite)
+ATTACH '{TEST_DIR}/all_varchar_reset.db' AS s (TYPE sqlite)
 
 query II
 SELECT i, typeof(i) FROM s.t
@@ -49,7 +49,7 @@ SELECT i, typeof(i) FROM s.t
 1	BIGINT
 
 query II
-SELECT i, typeof(i) FROM sqlite_scan('__TEST_DIR__/all_varchar_reset.db', 't')
+SELECT i, typeof(i) FROM sqlite_scan('{TEST_DIR}/all_varchar_reset.db', 't')
 ----
 1	BIGINT
 
@@ -65,6 +65,6 @@ SELECT current_setting('sqlite_all_varchar')
 false
 
 query II con2
-SELECT i, typeof(i) FROM sqlite_scan('__TEST_DIR__/all_varchar_reset.db', 't')
+SELECT i, typeof(i) FROM sqlite_scan('{TEST_DIR}/all_varchar_reset.db', 't')
 ----
 1	BIGINT

@@ -1,6 +1,6 @@
-# name: test/sql/scanner/http_sqlite_15_concurrent_lifecycle.test
+# name: test/sql/http_concurrent/http_sqlite_15_concurrent_lifecycle.test
 # description: Concurrent register/open/scan/teardown across many contexts - stresses the VFS registry under load
-# group: [scanner]
+# group: [http_concurrent]
 
 require sqlite_scanner
 
