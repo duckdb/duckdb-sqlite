@@ -82,6 +82,8 @@ jobs:
         key: ${{ steps.cache_key.outputs.value }}
 
     - name: Build extension
+      env:
+        SQLITE_ENABLE_HTTPFS_TESTS: 1
       run: |
         make release
 
@@ -187,6 +189,7 @@ jobs:
 
     - name: Build extension
       env:
+        SQLITE_ENABLE_HTTPFS_TESTS: 1
         THREADSAN: ${{ matrix.sanitizer.threadsan_enabled }}
       run: |
         make relassert
