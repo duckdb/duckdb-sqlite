@@ -367,11 +367,48 @@ bool SQLiteDB::ColumnExists(const string &table_name, const string &column_name)
 	return false;
 }
 
-bool SQLiteDB::GetRowIdInfo(const string &table_name, RowIdInfo &row_id_info) {
+bool SQLiteDB::TryGetRowIdName(const string &table_name, string &rowid_name) {
+	// table_xinfo also lists generated columns, which hide the row id names as well
+	vector<string> column_names;
+	SQLiteStatement stmt;
+	stmt = Prepare(StringUtil::Format("PRAGMA table_xinfo(\"%s\")", SQLiteUtils::SanitizeIdentifier(table_name)));
+	while (stmt.Step()) {
+		column_names.push_back(stmt.GetValue<string>(1));
+	}
+	for (auto candidate : {"rowid", "_rowid_", "oid"}) {
+		bool hidden = false;
+		for (auto &column_name : column_names) {
+			if (StringUtil::CIEquals(column_name, candidate)) {
+				hidden = true;
+				break;
+			}
+		}
+		if (!hidden) {
+			rowid_name = candidate;
+			return true;
+		}
+	}
+	return false;
+}
+
+string SQLiteDB::GetRowIdName(const string &table_name) {
+	string rowid_name;
+	if (!TryGetRowIdName(table_name, rowid_name)) {
+		throw BinderException("Cannot address the rows of SQLite table \"%s\": columns named rowid, _rowid_ and oid "
+		                      "hide its row id",
+		                      table_name);
+	}
+	return rowid_name;
+}
+
+bool SQLiteDB::GetRowIdInfo(const string &table_name, const string &rowid_name, RowIdInfo &row_id_info) {
+	if (rowid_name.empty()) {
+		return false;
+	}
 	SQLiteStatement stmt;
 	auto sanitized_table_name = SQLiteUtils::SanitizeIdentifier(table_name);
-	if (!TryPrepare(StringUtil::Format("SELECT (SELECT MIN(ROWID) FROM \"%s\"), (SELECT MAX(ROWID) FROM \"%s\")",
-	                                   sanitized_table_name, sanitized_table_name),
+	if (!TryPrepare(StringUtil::Format("SELECT (SELECT MIN(%s) FROM \"%s\"), (SELECT MAX(%s) FROM \"%s\")", rowid_name,
+	                                   sanitized_table_name, rowid_name, sanitized_table_name),
 	                stmt)) {
 		return false;
 	}

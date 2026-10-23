@@ -52,9 +52,14 @@ public:
 	void GetViewInfo(const string &view_name, string &sql);
 	void GetIndexInfo(const string &index_name, string &sql, string &table_name);
 	idx_t RunPragma(string pragma_name);
-	//! Gets the max row id of a table, returns false if the table does not have a
-	//! rowid column
-	bool GetRowIdInfo(const string &table_name, RowIdInfo &info);
+	//! Gets the name that addresses the row id of a table: the first of rowid, _rowid_ and oid that is not hidden by
+	//! a column of the same name. Returns false if all three are taken by columns
+	bool TryGetRowIdName(const string &table_name, string &rowid_name);
+	//! Gets the name that addresses the row id of a table, throws if all of rowid, _rowid_ and oid are taken by columns
+	string GetRowIdName(const string &table_name);
+	//! Gets the min and max row id of a table, returns false if the table does not have a
+	//! rowid column or the row ids are not suitable for a parallel scan
+	bool GetRowIdInfo(const string &table_name, const string &rowid_name, RowIdInfo &info);
 	bool ColumnExists(const string &table_name, const string &column_name);
 	vector<IndexInfo> GetIndexInfo(const string &table_name);
 

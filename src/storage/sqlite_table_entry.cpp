@@ -39,7 +39,8 @@ TableFunction SQLiteTableEntry::GetScanFunction(ClientContext &context, unique_p
 	auto &transaction = Transaction::Get(context, catalog).Cast<SQLiteTransaction>();
 	auto &db = transaction.GetDB();
 
-	if (!db.GetRowIdInfo(name.GetIdentifierName(), result->row_id_info)) {
+	db.TryGetRowIdName(name.GetIdentifierName(), result->rowid_name);
+	if (!db.GetRowIdInfo(name.GetIdentifierName(), result->rowid_name, result->row_id_info)) {
 		result->rows_per_group = optional_idx();
 	}
 
@@ -76,7 +77,9 @@ TableStorageInfo SQLiteTableEntry::GetStorageInfo(ClientContext &context) {
 	TableStorageInfo result;
 
 	RowIdInfo info;
-	if (!db.GetRowIdInfo(name.GetIdentifierName(), info)) {
+	string rowid_name;
+	db.TryGetRowIdName(name.GetIdentifierName(), rowid_name);
+	if (!db.GetRowIdInfo(name.GetIdentifierName(), rowid_name, info)) {
 		// probably
 		result.cardinality = 10000;
 	} else {

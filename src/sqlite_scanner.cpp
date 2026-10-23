@@ -76,7 +76,8 @@ static unique_ptr<FunctionData> SqliteBind(ClientContext &context, TableFunction
 		throw std::runtime_error("no columns for table " + result->table_name);
 	}
 
-	if (!db.GetRowIdInfo(result->table_name, result->row_id_info)) {
+	db.TryGetRowIdName(result->table_name, result->rowid_name);
+	if (!db.GetRowIdInfo(result->table_name, result->rowid_name, result->row_id_info)) {
 		result->rows_per_group = optional_idx();
 	}
 
@@ -93,13 +94,20 @@ static string SqliteGetScanSQL(const SqliteBindData &bind_data, const vector<col
 		return bind_data.sql;
 	}
 	auto col_names = StringUtil::Join(column_ids.data(), column_ids.size(), ", ", [&](const idx_t column_id) {
-		return column_id == (column_t)-1 ? "ROWID"
-		                                 : '"' + SQLiteUtils::SanitizeIdentifier(bind_data.names[column_id]) + '"';
+		if (column_id != (column_t)-1) {
+			return '"' + SQLiteUtils::SanitizeIdentifier(bind_data.names[column_id]) + '"';
+		}
+		if (bind_data.rowid_name.empty()) {
+			throw BinderException("Cannot read the row id of SQLite table \"%s\": columns named rowid, _rowid_ and oid "
+			                      "hide it",
+			                      bind_data.table_name);
+		}
+		return bind_data.rowid_name;
 	});
 
 	auto sql = StringUtil::Format("SELECT %s FROM \"%s\"", col_names, SQLiteUtils::SanitizeIdentifier(bind_data.table_name));
 	if (bind_data.rows_per_group.IsValid()) {
-		sql += " WHERE ROWID BETWEEN ? AND ?";
+		sql += " WHERE " + bind_data.rowid_name + " BETWEEN ? AND ?";
 	}
 	return sql;
 }
