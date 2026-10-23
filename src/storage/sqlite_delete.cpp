@@ -32,10 +32,10 @@ public:
 	bool delete_done = false;
 };
 
-string GetDeleteSQL(const string &table_name) {
+string GetDeleteSQL(const string &table_name, const string &rowid_name) {
 	string result;
 	result = "DELETE FROM " + SQLiteUtils::WriteOptionallyQuoted(table_name);
-	result += " WHERE rowid = ?";
+	result += " WHERE " + rowid_name + " = ?";
 	return result;
 }
 
@@ -69,8 +69,9 @@ SourceResultType SQLiteDelete::GetDataInternal(ExecutionContext &context, DataCh
 	if (!insert_gstate.delete_done) {
 		if (!insert_gstate.statement.IsOpen()) {
 			auto &transaction = SQLiteTransaction::Get(context.client, insert_gstate.table.catalog);
-			insert_gstate.statement =
-			    transaction.GetDB().Prepare(GetDeleteSQL(insert_gstate.table.name.GetIdentifierName()));
+			auto &db = transaction.GetDB();
+			auto table_name = insert_gstate.table.name.GetIdentifierName();
+			insert_gstate.statement = db.Prepare(GetDeleteSQL(table_name, db.GetRowIdName(table_name)));
 		}
 		for (auto row_id : insert_gstate.rowids) {
 			insert_gstate.statement.Bind<int64_t>(0, row_id);

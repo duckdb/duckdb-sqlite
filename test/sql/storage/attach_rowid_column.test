@@ -1,0 +1,166 @@
+# name: test/sql/storage/attach_rowid_column.test
+# description: Tables with ordinary columns named rowid, _rowid_ or oid address rows by the real SQLite row id
+# group: [storage]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/attach_rowid_column.db' AS s (TYPE SQLITE)
+
+# a column named rowid hides the row id for that name
+statement ok
+FROM sqlite_query('s', 'CREATE TABLE r(rowid INT, v INT)')
+
+statement ok
+FROM sqlite_query('s', 'INSERT INTO r VALUES (5, 1), (5, 2), (NULL, 3), (7, 4)')
+
+# one row qualifies, the other row sharing the rowid column value is untouched
+statement ok
+UPDATE s.r SET v = 100 WHERE v = 1
+
+# the rowid column is NULL in the qualifying row
+statement ok
+UPDATE s.r SET v = 300 WHERE v = 3
+
+statement ok
+DELETE FROM s.r WHERE v = 4
+
+query III
+SELECT * FROM sqlite_query('s', 'SELECT _rowid_ AS rid, rowid AS col, v FROM r ORDER BY _rowid_')
+----
+1	5	100
+2	5	2
+3	NULL	300
+
+statement ok
+DELETE FROM s.r WHERE rowid IS NULL
+
+statement ok
+DELETE FROM s.r WHERE v = 2
+
+query III
+SELECT * FROM sqlite_query('s', 'SELECT _rowid_ AS rid, rowid AS col, v FROM r ORDER BY _rowid_')
+----
+1	5	100
+
+# columns named rowid and _rowid_ (in any case) leave oid
+statement ok
+FROM sqlite_query('s', 'CREATE TABLE r2(ROWID INT, _RowId_ INT, v INT)')
+
+statement ok
+FROM sqlite_query('s', 'INSERT INTO r2 VALUES (1, 1, 1), (1, 1, 2), (NULL, NULL, 3)')
+
+statement ok
+UPDATE s.r2 SET v = v + 10 WHERE v >= 2
+
+statement ok
+DELETE FROM s.r2 WHERE v = 1
+
+query II
+SELECT * FROM sqlite_query('s', 'SELECT oid AS rid, v FROM r2 ORDER BY oid')
+----
+2	12
+3	13
+
+# a generated column hides the name as well
+statement ok
+FROM sqlite_query('s', 'CREATE TABLE r3(v INT, rowid INT GENERATED ALWAYS AS (v % 2) VIRTUAL)')
+
+statement ok
+FROM sqlite_query('s', 'INSERT INTO r3(v) VALUES (1), (2), (3)')
+
+statement ok
+UPDATE s.r3 SET v = v + 10 WHERE v = 1
+
+statement ok
+DELETE FROM s.r3 WHERE v = 2
+
+query II
+SELECT * FROM sqlite_query('s', 'SELECT _rowid_ AS rid, v FROM r3 ORDER BY _rowid_')
+----
+1	11
+3	3
+
+# all three names taken by columns: rows cannot be addressed
+statement ok
+FROM sqlite_query('s', 'CREATE TABLE r4(rowid INT, _rowid_ INT, oid INT, v INT)')
+
+statement ok
+FROM sqlite_query('s', 'INSERT INTO r4 VALUES (1, 1, 1, 1), (1, 1, 1, 2)')
+
+query IIII
+SELECT * FROM s.r4 ORDER BY v
+----
+1	1	1	1
+1	1	1	2
+
+statement error
+UPDATE s.r4 SET v = 100 WHERE v = 1
+----
+"r4": columns named rowid, _rowid_ and oid hide
+
+statement error
+DELETE FROM s.r4 WHERE v = 1
+----
+"r4": columns named rowid, _rowid_ and oid hide
+
+query IIII
+SELECT * FROM s.r4 ORDER BY v
+----
+1	1	1	1
+1	1	1	2
+
+# parallel scans cover rows whose rowid column is NULL or far outside the row id range
+statement ok
+FROM sqlite_query('s', 'CREATE TABLE big(rowid INT, v INT)')
+
+statement ok
+FROM sqlite_query('s', 'WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < 300000)
+    INSERT INTO big SELECT CASE WHEN i % 10 = 0 THEN NULL WHEN i % 10 = 5 THEN -i ELSE i * 1000 END, i FROM c')
+
+statement ok
+DETACH s
+
+statement ok
+SET threads = 4
+
+statement ok
+ATTACH '{TEST_DIR}/attach_rowid_column.db' AS s (TYPE SQLITE, READ_ONLY)
+
+query II
+SELECT count(*), sum(v) FROM s.big
+----
+300000	45000150000
+
+query III
+SELECT count(*), count(rowid), sum(rowid) FROM s.big
+----
+300000	270000	35995500000000
+
+query II
+SELECT count(*), sum(v) FROM sqlite_scan('{TEST_DIR}/attach_rowid_column.db', 'big')
+----
+300000	45000150000
+
+statement ok
+ATTACH ':memory:' AS mem
+
+statement ok
+COPY FROM DATABASE s TO mem
+
+query II
+SELECT count(*), sum(v) FROM mem.big
+----
+300000	45000150000
+
+# the parallel scan works with every remaining row id name
+query II
+SELECT count(*), sum(v) FROM s.r2
+----
+2	25
+
+# without a usable row id name the scan falls back to a single slice
+query II
+SELECT count(*), sum(v) FROM s.r4
+----
+2	3

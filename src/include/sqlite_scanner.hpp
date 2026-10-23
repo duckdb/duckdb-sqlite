@@ -24,6 +24,8 @@ struct SqliteBindData : public TableFunctionData {
 	string sql;
 	vector<Value> params;
 
+	//! The name that addresses the row id of the table, empty if all row id names are taken by columns
+	string rowid_name;
 	RowIdInfo row_id_info;
 	bool all_varchar = false;
 
