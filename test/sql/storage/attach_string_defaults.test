@@ -1,0 +1,74 @@
+# name: test/sql/storage/attach_string_defaults.test
+# description: Test inserting into SQLite tables with identifiers used as string DEFAULT values
+# group: [storage]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/attach_string_defaults.db' AS s (TYPE SQLITE)
+
+statement ok
+FROM sqlite_query('s', 'CREATE TABLE string_defaults_test (
+    id       INTEGER PRIMARY KEY,
+    v        INTEGER,
+    empty    TEXT DEFAULT "",
+    required TEXT NOT NULL DEFAULT "",
+    quoted   TEXT DEFAULT "it''s ""q""",
+    bare     TEXT DEFAULT abc,
+    literal  TEXT DEFAULT ''x'',
+    num      INTEGER DEFAULT "5",
+    bad_num  INTEGER DEFAULT "")')
+
+statement ok
+DETACH s
+
+statement ok
+ATTACH '{TEST_DIR}/attach_string_defaults.db' AS s (TYPE SQLITE)
+
+# an identifier in a SQLite DEFAULT clause is a string literal
+query II
+SELECT column_name, column_default FROM duckdb_columns() WHERE database_name = 's' AND table_name = 'string_defaults_test' ORDER BY column_index
+----
+id	NULL
+v	NULL
+empty	''
+required	''
+quoted	'it''s "q"'
+bare	'abc'
+literal	'x'
+num	'5'
+bad_num	NULL
+
+# columns with defaults not specified
+statement ok
+INSERT INTO s.string_defaults_test (v) VALUES (1)
+
+# explicit values
+statement ok
+INSERT INTO s.string_defaults_test (v, empty, required, quoted, bare, num, bad_num) VALUES (2, NULL, 'r', 'q', 'b', 6, 7)
+
+# explicit NULL in a NOT NULL column
+statement error
+INSERT INTO s.string_defaults_test (v, required) VALUES (3, NULL)
+----
+NOT NULL constraint failed
+
+query IIIIIIIII
+SELECT * FROM s.string_defaults_test ORDER BY id
+----
+1	1	(empty)	(empty)	it's "q"	abc	x	5	NULL
+2	2	NULL	r	q	b	x	6	7
+
+# values stored in SQLite
+query IIIII
+FROM sqlite_query('s', 'SELECT id, quote(empty), quote(required), quote(quoted), quote(bad_num) FROM string_defaults_test ORDER BY id')
+----
+1	''	''	'it''s "q"'	NULL
+2	NULL	'r'	'q'	7
+
+# scanning the table directly
+query II
+SELECT id, required FROM sqlite_scan('{TEST_DIR}/attach_string_defaults.db', 'string_defaults_test') ORDER BY id
+----
+1	(empty)
+2	r

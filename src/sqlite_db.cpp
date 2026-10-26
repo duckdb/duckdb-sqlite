@@ -1,5 +1,6 @@
 #include "duckdb/parser/constraints/not_null_constraint.hpp"
 #include "duckdb/parser/constraints/unique_constraint.hpp"
+#include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/storage/table_storage_info.hpp"
 #include "duckdb/parser/column_list.hpp"
@@ -304,6 +305,35 @@ void SQLiteDB::GetViewInfo(const string &view_name, string &sql) {
 	throw InternalException("GetViewInfo - view \"%s\" not found", view_name);
 }
 
+//! SQLite treats an identifier in a DEFAULT clause (e.g. DEFAULT "" or DEFAULT abc) as a string literal
+static unique_ptr<ParsedExpression> SQLiteStringDefault(const string &str, const LogicalType &column_type) {
+	Value value(str);
+	if (!value.DefaultTryCastAs(column_type)) {
+		// e.g. DEFAULT "" in an INTEGER column, SQLite stores the string as is - keep the column without a default
+		return nullptr;
+	}
+	return ConstantExpression::FromValue(value);
+}
+
+static unique_ptr<ParsedExpression> ParseSQLiteDefault(const string &default_value, const LogicalType &column_type) {
+	if (default_value == "\"\"") {
+		// the DuckDB parser does not accept zero-length delimited identifiers
+		return SQLiteStringDefault(string(), column_type);
+	}
+	auto expressions = Parser::GetBuiltinParser().ParseExpressionList(default_value);
+	if (expressions.empty()) {
+		throw InternalException("Expression list is empty");
+	}
+	auto &expr = expressions[0];
+	if (expr->GetExpressionClass() == ExpressionClass::COLUMN_REF) {
+		auto &column_ref = expr->Cast<ColumnRefExpression>();
+		if (!column_ref.IsQualified()) {
+			return SQLiteStringDefault(column_ref.GetColumnName().GetIdentifierName(), column_type);
+		}
+	}
+	return std::move(expr);
+}
+
 void SQLiteDB::GetTableInfo(const string &table_name, ColumnList &columns, vector<unique_ptr<Constraint>> &constraints,
                             bool all_varchar) {
 	SQLiteStatement stmt;
@@ -329,12 +359,11 @@ void SQLiteDB::GetTableInfo(const string &table_name, ColumnList &columns, vecto
 			primary_keys.emplace_back(sqlite_colname);
 		}
 		ColumnDefinition column(Identifier(std::move(sqlite_colname)), std::move(column_type));
-		if (!default_value.empty() && default_value != "\"\"") {
-			auto expressions = Parser::GetBuiltinParser().ParseExpressionList(default_value);
-			if (expressions.empty()) {
-				throw InternalException("Expression list is empty");
+		if (!default_value.empty()) {
+			auto default_expr = ParseSQLiteDefault(default_value, column.Type());
+			if (default_expr) {
+				column.SetDefaultValue(std::move(default_expr));
 			}
-			column.SetDefaultValue(std::move(expressions[0]));
 		}
 		columns.AddColumn(std::move(column));
 		if (not_null) {
