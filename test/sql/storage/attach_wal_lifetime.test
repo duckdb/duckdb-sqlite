@@ -1,11 +1,34 @@
 # name: test/sql/storage/attach_wal_lifetime.test
-# description: a WAL-mode database is checkpointed once at DETACH, not after every transaction
-# group: [sqlite_storage]
+# description: with sqlite_keep_database_open a WAL-mode database is checkpointed once at DETACH, not after every transaction
+# group: [storage]
 
 require sqlite_scanner
 
+# default: every transaction opens and closes its own handle; each close is the last connection,
+# so SQLite checkpoints and removes the WAL after every transaction (the existing behaviour)
 statement ok
-ATTACH '__TEST_DIR__/wal_lifetime.db' AS s (TYPE SQLITE, JOURNAL_MODE 'WAL', SYNCHRONOUS 'NORMAL')
+ATTACH '{TEST_DIR}/wal_lifetime_default.db' AS d (TYPE SQLITE, JOURNAL_MODE 'WAL')
+
+statement ok
+CREATE TABLE d.t(i INTEGER)
+
+statement ok
+INSERT INTO d.t VALUES (1)
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/wal_lifetime_default.db-wal')
+----
+0
+
+statement ok
+DETACH d
+
+# opt-in: the catalog keeps one handle open while attached
+statement ok
+SET sqlite_keep_database_open = true
+
+statement ok
+ATTACH '{TEST_DIR}/wal_lifetime.db' AS s (TYPE SQLITE, JOURNAL_MODE 'WAL', SYNCHRONOUS 'NORMAL')
 
 statement ok
 CREATE TABLE s.t(i INTEGER)
@@ -19,11 +42,10 @@ INSERT INTO s.t VALUES (2)
 statement ok
 INSERT INTO s.t VALUES (3)
 
-# every statement above ran in its own transaction and closed its own SQLite handle. The catalog
-# keeps one handle open for as long as it is attached, so none of those closes was the last
-# connection and the WAL was not checkpointed/removed after each of them.
+# every statement above ran in its own transaction and closed its own SQLite handle. None of those
+# closes was the last connection, so the WAL was not checkpointed/removed after each of them.
 query I
-SELECT count(*) FROM glob('__TEST_DIR__/wal_lifetime.db-wal')
+SELECT count(*) FROM glob('{TEST_DIR}/wal_lifetime.db-wal')
 ----
 1
 
@@ -34,22 +56,34 @@ SELECT * FROM s.t ORDER BY i
 2
 3
 
+# the setting is read at ATTACH: turning it off does not affect a database that is already attached
+statement ok
+SET sqlite_keep_database_open = false
+
+statement ok
+INSERT INTO s.t VALUES (4)
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/wal_lifetime.db-wal')
+----
+1
+
 statement ok
 DETACH s
 
 # the last handle closed with the catalog: SQLite ran its checkpoint-on-close and removed the WAL
 query I
-SELECT count(*) FROM glob('__TEST_DIR__/wal_lifetime.db-wal')
+SELECT count(*) FROM glob('{TEST_DIR}/wal_lifetime.db-wal')
 ----
 0
 
 statement ok
-ATTACH '__TEST_DIR__/wal_lifetime.db' AS s (TYPE SQLITE)
+ATTACH '{TEST_DIR}/wal_lifetime.db' AS s (TYPE SQLITE)
 
 query I
 SELECT count(*) FROM s.t
 ----
-3
+4
 
 statement ok
 DETACH s

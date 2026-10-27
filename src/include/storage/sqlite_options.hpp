@@ -22,6 +22,8 @@ struct SQLiteOpenOptions {
 	string journal_mode;
 	// synchronous setting (PRAGMA synchronous), validated against the SQLite keyword list
 	string synchronous;
+	// keep one handle open for the lifetime of an attached on-disk database (sqlite_keep_database_open)
+	bool keep_database_open = false;
 
 	//! Validate and normalise a journal_mode value; throws on anything SQLite would not accept
 	static string ParseJournalMode(const string &value);
