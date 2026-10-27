@@ -196,10 +196,12 @@ optional_ptr<CatalogEntry> SQLiteTransaction::GetCatalogEntry(const string &entr
 	case CatalogType::TABLE_ENTRY: {
 		CreateTableInfo info(sqlite_catalog.GetMainSchema(), Identifier(entry_name));
 		bool all_varchar = SQLiteUtils::AllVarchar(*context.lock());
-		GetDB().GetTableInfo(entry_name, info.columns, info.constraints, all_varchar);
+		vector<bool> utf8_text_affinity;
+		GetDB().GetTableInfo(entry_name, info.columns, info.constraints, all_varchar, utf8_text_affinity);
 		D_ASSERT(!info.columns.empty());
 
-		result = make_uniq<SQLiteTableEntry>(sqlite_catalog, sqlite_catalog.GetMainSchema(), info, all_varchar);
+		result = make_uniq<SQLiteTableEntry>(sqlite_catalog, sqlite_catalog.GetMainSchema(), info, all_varchar,
+		                                     std::move(utf8_text_affinity));
 		break;
 	}
 	case CatalogType::VIEW_ENTRY: {

@@ -1,0 +1,326 @@
+# name: test/sql/storage/attach_filter_pushdown.test
+# description: Test pushing filters into scans of attached SQLite tables
+# group: [storage]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/attach_filter_pushdown.db' AS s (TYPE SQLITE)
+
+statement ok
+CREATE TABLE s.t(i BIGINT, v VARCHAR, d DOUBLE);
+
+statement ok
+INSERT INTO s.t SELECT r, 'v' || r, r / 2 FROM range(10) t(r);
+
+statement ok
+INSERT INTO s.t VALUES (NULL, NULL, NULL);
+
+# integer filters run in SQLite
+query II
+EXPLAIN SELECT v FROM s.t WHERE i = 3
+----
+physical_plan	<REGEX>:.*Sqlite Scan.*Filters: i = 3.*
+
+query I
+SELECT v FROM s.t WHERE i = 3
+----
+v3
+
+query I
+SELECT i FROM s.t WHERE i > 7 OR i < 1 ORDER BY i
+----
+0
+8
+9
+
+query I
+SELECT i FROM s.t WHERE i >= 4 AND i <> 5 AND i <= 6 ORDER BY i
+----
+4
+6
+
+query I
+SELECT i FROM s.t WHERE i IN (2, 5, 8) ORDER BY i
+----
+2
+5
+8
+
+query I
+SELECT v FROM s.t WHERE i IS NULL
+----
+NULL
+
+query I
+SELECT count(*) FROM s.t WHERE i IS NOT NULL
+----
+10
+
+query I
+SELECT i FROM s.t WHERE i IS DISTINCT FROM 3 ORDER BY i
+----
+0
+1
+2
+4
+5
+6
+7
+8
+9
+NULL
+
+query I
+SELECT i FROM s.t WHERE i IS NOT DISTINCT FROM 3
+----
+3
+
+# string filters run in SQLite
+query II
+EXPLAIN SELECT i FROM s.t WHERE v = 'v4'
+----
+physical_plan	<REGEX>:.*Sqlite Scan.*Filters: v = 'v4'.*
+
+query I
+SELECT i FROM s.t WHERE v = 'v4'
+----
+4
+
+query I
+SELECT v FROM s.t WHERE v LIKE 'v1%'
+----
+v1
+
+query I
+SELECT v FROM s.t WHERE v IN ('v2', 'v7', 'x') ORDER BY v
+----
+v2
+v7
+
+query I
+SELECT v FROM s.t WHERE v > 'v7' ORDER BY v
+----
+v8
+v9
+
+# quotes in string constants
+statement ok
+INSERT INTO s.t VALUES (10, 'it''s', 5);
+
+query I
+SELECT i FROM s.t WHERE v = 'it''s'
+----
+10
+
+# double filters are evaluated in DuckDB, also when combined with filters that run in SQLite
+query I
+SELECT i FROM s.t WHERE d > 3 AND i < 8 ORDER BY i
+----
+7
+
+query I
+SELECT i FROM s.t WHERE d = 2 ORDER BY i
+----
+4
+
+# chunks that are filtered out entirely in DuckDB
+statement ok
+CREATE TABLE s.big AS SELECT r AS i, r::DOUBLE AS d, 'v' || r AS v FROM range(10000) t(r);
+
+query III
+SELECT count(*), min(v), max(i) FROM s.big WHERE d >= 9000 AND i <> 9500
+----
+999	v9000	9999
+
+# rowid filters run in SQLite
+query II
+EXPLAIN SELECT i FROM s.t WHERE rowid = 3
+----
+physical_plan	<REGEX>:.*Sqlite Scan.*Filters: rowid = 3.*
+
+query I
+SELECT i FROM s.t WHERE rowid = 3
+----
+2
+
+query II
+SELECT rowid, i FROM s.t WHERE rowid > 9 ORDER BY rowid
+----
+10	9
+11	NULL
+12	10
+
+# a column named rowid is filtered as a column, the row id of SQLite is addressed through another name
+statement ok
+FROM sqlite_query('s', 'CREATE TABLE rowid_column(rowid INT, v INT)')
+
+statement ok
+FROM sqlite_query('s', 'INSERT INTO rowid_column VALUES (5, 1), (1, 2), (5, 3)')
+
+query I
+SELECT v FROM s.rowid_column WHERE rowid = 1
+----
+2
+
+statement ok
+DELETE FROM s.rowid_column WHERE rowid = 5 AND v = 3
+
+query II
+SELECT * FROM sqlite_query('s', 'SELECT _rowid_, v FROM rowid_column ORDER BY _rowid_')
+----
+1	1
+2	2
+
+# join filters on any column
+query II
+SELECT t.i, r.d FROM s.t JOIN (VALUES (1.0), (2.5)) r(d) USING (d) ORDER BY ALL
+----
+2	1.0
+5	2.5
+
+query I
+SELECT t.i FROM s.t JOIN range(3) r(i) USING (i) ORDER BY ALL
+----
+0
+1
+2
+
+# a join with a single value pushes an equality filter into the scan
+query I
+SELECT t.i FROM s.t JOIN (VALUES (2.0)) r(d) USING (d)
+----
+4
+
+query I
+SELECT t.i FROM s.t JOIN (VALUES (4)) r(i) USING (i)
+----
+4
+
+# updates and deletes
+statement ok
+UPDATE s.t SET v = 'updated' WHERE i = 9
+
+query I
+SELECT i FROM s.t WHERE v = 'updated'
+----
+9
+
+statement ok
+DELETE FROM s.t WHERE i >= 9
+
+query I
+SELECT max(i) FROM s.t
+----
+8
+
+# the collation of a column in SQLite does not change the result
+statement ok
+FROM sqlite_query('s', 'CREATE TABLE nocase(s TEXT COLLATE NOCASE)')
+
+statement ok
+INSERT INTO s.nocase VALUES ('abc'), ('ABC'), ('b');
+
+query I
+SELECT s FROM s.nocase WHERE s = 'abc'
+----
+abc
+
+query I
+SELECT s FROM s.nocase WHERE s IN ('abc', 'x')
+----
+abc
+
+query I
+SELECT s FROM s.nocase WHERE s < 'a' ORDER BY s
+----
+ABC
+
+# strings in columns without TEXT affinity are compared in DuckDB
+statement ok
+FROM sqlite_query('s', 'CREATE TABLE numeric_affinity(j JSON)')
+
+statement ok
+FROM sqlite_query('s', 'INSERT INTO numeric_affinity VALUES (''1abc''), (''xyz'')')
+
+query I
+SELECT j FROM s.numeric_affinity WHERE j < '9'
+----
+1abc
+
+# SQLite orders the strings of a UTF-16 database by their UTF-16 bytes
+statement ok
+ATTACH 'data/db/utf16.db' AS u (TYPE SQLITE, READ_ONLY)
+
+query I
+SELECT v FROM u.t WHERE v > 'b' ORDER BY v
+----
+c
+Ā
+
+query I
+SELECT v FROM u.t WHERE v = 'Ā'
+----
+Ā
+
+# strings with a NUL byte cannot be written into the SQLite query, these are compared in DuckDB
+statement ok
+INSERT INTO s.t VALUES (20, 'a' || chr(0), 0), (21, chr(0), 0);
+
+query I
+SELECT i FROM s.t WHERE v = 'a' || chr(0)
+----
+20
+
+query I
+SELECT i FROM s.t WHERE v IN (chr(0), 'v1') ORDER BY i
+----
+1
+21
+
+statement ok
+SET sqlite_enable_filter_pushdown = false
+
+query II
+EXPLAIN SELECT v FROM s.t WHERE i = 3
+----
+physical_plan	<!REGEX>:.*Sqlite Scan.*Filters:.*
+
+query I
+SELECT v FROM s.t WHERE i = 3
+----
+v3
+
+statement ok
+RESET sqlite_enable_filter_pushdown
+
+# with sqlite_all_varchar all filters are compared in DuckDB
+statement ok
+FROM sqlite_query('s', 'CREATE TABLE text_blobs(v TEXT)')
+
+statement ok
+FROM sqlite_query('s', 'INSERT INTO text_blobs VALUES (X''78''), (''y'')')
+
+statement ok
+DETACH s
+
+statement ok
+SET sqlite_all_varchar = true
+
+statement ok
+ATTACH '{TEST_DIR}/attach_filter_pushdown.db' AS s (TYPE SQLITE)
+
+query I
+SELECT count(*) FROM s.t WHERE i = '03'
+----
+0
+
+query I
+SELECT v FROM s.t WHERE i = '3'
+----
+v3
+
+query I
+SELECT v FROM s.text_blobs WHERE v = 'x'
+----
+x

@@ -335,13 +335,17 @@ static unique_ptr<ParsedExpression> ParseSQLiteDefault(const string &default_val
 }
 
 void SQLiteDB::GetTableInfo(const string &table_name, ColumnList &columns, vector<unique_ptr<Constraint>> &constraints,
-                            bool all_varchar) {
+                            bool all_varchar, vector<bool> &utf8_text_affinity) {
 	SQLiteStatement stmt;
 
 	idx_t primary_key_index = idx_t(-1);
 	vector<Identifier> primary_keys;
 
 	bool found = false;
+	utf8_text_affinity.clear();
+
+	stmt = Prepare("PRAGMA encoding");
+	bool utf8 = stmt.Step() && stmt.GetValue<string>(0) == "UTF-8";
 
 	stmt = Prepare(StringUtil::Format("PRAGMA table_info('%s')", SQLiteUtils::SanitizeString(table_name)));
 	while (stmt.Step()) {
@@ -353,6 +357,7 @@ void SQLiteDB::GetTableInfo(const string &table_name, ColumnList &columns, vecto
 		auto pk = stmt.GetValue<int>(5);
 		StringUtil::Trim(sqlite_type);
 		auto column_type = all_varchar ? LogicalType::VARCHAR : SQLiteUtils::TypeToLogicalType(sqlite_type);
+		utf8_text_affinity.push_back(utf8 && SQLiteUtils::HasTextAffinity(sqlite_type));
 
 		if (pk) {
 			primary_key_index = cid;

@@ -4,13 +4,15 @@
 #include "duckdb/storage/statistics/base_statistics.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
 #include "sqlite_scanner.hpp"
+#include "sqlite_filter_pushdown.hpp"
 #include "duckdb/storage/table_storage_info.hpp"
 
 namespace duckdb {
 
 SQLiteTableEntry::SQLiteTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info,
-                                   bool all_varchar)
-    : TableCatalogEntry(catalog, schema, info), all_varchar(all_varchar), columns(std::move(info.columns)) {
+                                   bool all_varchar, vector<bool> utf8_text_affinity_p)
+    : TableCatalogEntry(catalog, schema, info), all_varchar(all_varchar),
+      utf8_text_affinity(std::move(utf8_text_affinity_p)), columns(std::move(info.columns)) {
 }
 
 const ColumnList &SQLiteTableEntry::GetColumns() const {
@@ -35,6 +37,7 @@ TableFunction SQLiteTableEntry::GetScanFunction(ClientContext &context, unique_p
 	result->file_name = sqlite_catalog.path;
 	result->table_name = name.GetIdentifierName();
 	result->all_varchar = all_varchar;
+	result->utf8_text_affinity = utf8_text_affinity;
 
 	auto &transaction = Transaction::Get(context, catalog).Cast<SQLiteTransaction>();
 	auto &db = transaction.GetDB();
@@ -68,7 +71,15 @@ TableFunction SQLiteTableEntry::GetScanFunction(ClientContext &context, unique_p
 	result->context_ptr = transaction.context;
 
 	bind_data = std::move(result);
-	return static_cast<TableFunction>(SqliteScanFunction());
+	TableFunction function = SqliteScanFunction();
+	Value filter_pushdown;
+	if (context.TryGetCurrentSetting("sqlite_enable_filter_pushdown", filter_pushdown)) {
+		function.filter_pushdown = BooleanValue::Get(filter_pushdown);
+	}
+	if (function.filter_pushdown) {
+		function.pushdown_expression = SQLiteFilterPushdown::CanPushExpressionDown;
+	}
+	return function;
 }
 
 TableStorageInfo SQLiteTableEntry::GetStorageInfo(ClientContext &context) {

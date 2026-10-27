@@ -3,6 +3,7 @@
 #include "dbconnector/attached.hpp"
 
 #include "sqlite_db.hpp"
+#include "sqlite_filter_pushdown.hpp"
 #include "sqlite_stmt.hpp"
 #include "sqlite_scanner.hpp"
 #include "storage/sqlite_table_entry.hpp"
@@ -12,6 +13,7 @@
 #include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/timestamp.hpp"
+#include "duckdb/storage/table/column_segment.hpp"
 #include "duckdb/storage/table/row_group.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/config.hpp"
@@ -28,6 +30,10 @@ struct SqliteLocalState : public LocalTableFunctionState {
 	string stmt_sql;
 	bool done = false;
 	vector<column_t> column_ids;
+	//! The WHERE condition of the pushed down filters
+	string filter_condition;
+	//! The pushed down filters that are evaluated in DuckDB
+	vector<SQLiteScanFilter> filters;
 	//! The amount of rows we scanned as part of this row group
 	idx_t scan_count = 1;
 
@@ -66,7 +72,7 @@ static unique_ptr<FunctionData> SqliteBind(ClientContext &context, TableFunction
 	vector<unique_ptr<Constraint>> constraints;
 
 	result->all_varchar = SQLiteUtils::AllVarchar(context);
-	db.GetTableInfo(result->table_name, columns, constraints, result->all_varchar);
+	db.GetTableInfo(result->table_name, columns, constraints, result->all_varchar, result->utf8_text_affinity);
 	for (auto &column : columns.Logical()) {
 		names.emplace_back(column.GetName());
 		return_types.push_back(column.GetType());
@@ -89,7 +95,8 @@ static unique_ptr<FunctionData> SqliteBind(ClientContext &context, TableFunction
 	return std::move(result);
 }
 
-static string SqliteGetScanSQL(const SqliteBindData &bind_data, const vector<column_t> &column_ids) {
+static string SqliteGetScanSQL(const SqliteBindData &bind_data, const vector<column_t> &column_ids,
+                               const string &filter_condition) {
 	if (!bind_data.sql.empty()) {
 		return bind_data.sql;
 	}
@@ -106,8 +113,15 @@ static string SqliteGetScanSQL(const SqliteBindData &bind_data, const vector<col
 	});
 
 	auto sql = StringUtil::Format("SELECT %s FROM \"%s\"", col_names, SQLiteUtils::SanitizeIdentifier(bind_data.table_name));
+	vector<string> conditions;
 	if (bind_data.rows_per_group.IsValid()) {
-		sql += " WHERE " + bind_data.rowid_name + " BETWEEN ? AND ?";
+		conditions.push_back(bind_data.rowid_name + " BETWEEN ? AND ?");
+	}
+	if (!filter_condition.empty()) {
+		conditions.push_back(filter_condition);
+	}
+	if (!conditions.empty()) {
+		sql += " WHERE " + StringUtil::Join(conditions, " AND ");
 	}
 	return sql;
 }
@@ -134,7 +148,7 @@ static void SqliteInitInternal(ClientContext &context, const SqliteBindData &bin
 		local_state.owned_db = SQLiteDB::Open(bind_data.file_name.c_str(), options, context);
 		local_state.db = &local_state.owned_db;
 	}
-	string sql = SqliteGetScanSQL(bind_data, local_state.column_ids);
+	string sql = SqliteGetScanSQL(bind_data, local_state.column_ids, local_state.filter_condition);
 	SqlitePrepareStatement(local_state, sql);
 
 	idx_t param_idx = 0;
@@ -225,6 +239,8 @@ SqliteInitLocalState(ExecutionContext &context, TableFunctionInitInput &input, G
 		return std::move(result);
 	}
 	result->column_ids = input.column_ids;
+	result->filter_condition = SQLiteFilterPushdown::TransformFilters(context.client, bind_data, input.column_ids,
+	                                                                  input.filters, result->filters);
 	if (!bind_data.catalog_name.empty()) {
 		auto attached_catalog = SQLiteCatalog::Lookup(context.client, bind_data.catalog_name);
 		SQLiteCatalog &catalog = attached_catalog.Get<SQLiteCatalog>();
@@ -258,6 +274,26 @@ static timestamp_t ConvertTimestampInteger(sqlite3_stmt *stmt, int col) {
 static timestamp_t ConvertTimestampFloat(sqlite3_stmt *stmt, int col) {
 	int64_t timestamp_micros = Cast::Operation<double, int64_t>(sqlite3_column_double(stmt, col) * 1000000.0);
 	return Timestamp::FromEpochMicroSeconds(timestamp_micros);
+}
+
+static void SqliteApplyFilters(SqliteLocalState &state, DataChunk &output) {
+	auto count = output.size();
+	if (state.filters.empty() || count == 0) {
+		return;
+	}
+	SelectionVector sel;
+	idx_t approved_count = count;
+	for (auto &filter : state.filters) {
+		ColumnSegment::FilterSelection(sel, output.data[filter.column_index], *filter.state, count, approved_count);
+		if (approved_count == 0) {
+			break;
+		}
+	}
+	if (approved_count == 0) {
+		output.Reset();
+	} else if (approved_count != count) {
+		output.Slice(sel, approved_count);
+	}
 }
 
 static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
@@ -300,7 +336,7 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 			if (out_idx == STANDARD_VECTOR_SIZE) {
 				output.SetChildCardinality(out_idx);
 				SetVectorSizes(out_idx);
-				return;
+				break;
 			}
 			auto &stmt = state.stmt;
 			auto has_more = stmt.Step();
@@ -388,6 +424,7 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 			}
 			out_idx++;
 		}
+		SqliteApplyFilters(state, output);
 	}
 }
 

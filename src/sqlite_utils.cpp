@@ -133,6 +133,15 @@ LogicalType SQLiteUtils::TypeToLogicalType(const string &sqlite_type) {
 	return LogicalType::VARCHAR;
 }
 
+bool SQLiteUtils::HasTextAffinity(const string &sqlite_type) {
+	// the INT rule is applied before the TEXT rule
+	if (StringUtil::Contains(sqlite_type, "int")) {
+		return false;
+	}
+	return StringUtil::Contains(sqlite_type, "char") || StringUtil::Contains(sqlite_type, "clob") ||
+	       StringUtil::Contains(sqlite_type, "text");
+}
+
 string SQLiteUtils::EscapeQuotes(const string &text, char quote) {
 	return StringUtil::Replace(text, string(1, quote), string(2, quote));
 }

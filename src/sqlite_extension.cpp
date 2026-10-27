@@ -52,6 +52,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 	config.AddExtensionOption("sqlite_disable_multithreaded_scans", "Make all scans over the SQLite DB to be performed using a single worker thread",
 	                          LogicalType::BOOLEAN, Value::BOOLEAN(false));
 
+	config.AddExtensionOption("sqlite_enable_filter_pushdown", "Whether or not to use filter pushdown",
+	                          LogicalType::BOOLEAN, Value::BOOLEAN(true));
+
 	StorageExtension::Register(config, "sqlite_scanner", make_shared_ptr<SQLiteStorageExtension>());
 	ExtensionCallback::Register(config, make_shared_ptr<SQLiteVFSCleanupCallback>());
 }
