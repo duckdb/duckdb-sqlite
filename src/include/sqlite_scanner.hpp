@@ -28,6 +28,8 @@ struct SqliteBindData : public TableFunctionData {
 	string rowid_name;
 	RowIdInfo row_id_info;
 	bool all_varchar = false;
+	//! Whether each column has TEXT affinity in a UTF-8 database
+	vector<bool> utf8_text_affinity;
 
 	optional_idx rows_per_group = 122880;
 

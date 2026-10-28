@@ -1,0 +1,52 @@
+# name: test/sql/scanner/tpch_attach.test
+# description: test tpch queries on an attached database, with filters pushed into SQLite
+# group: [scanner]
+
+require sqlite_scanner
+
+require-env SQLITE_TPCH_GENERATED
+
+statement ok
+ATTACH 'data/db/tpch.db' AS tpch_sqlite (TYPE SQLITE, READ_ONLY);
+
+statement ok
+USE tpch_sqlite;
+
+require tpch
+
+loop i 1 9
+
+query I
+PRAGMA tpch({i})
+----
+<FILE>:duckdb/extension/tpch/dbgen/answers/sf0.1/q0{i}.csv
+
+endloop
+
+
+loop i 10 15
+
+query I
+PRAGMA tpch({i})
+----
+<FILE>:duckdb/extension/tpch/dbgen/answers/sf0.1/q{i}.csv
+
+endloop
+
+loop i 16 23
+
+query I
+PRAGMA tpch({i})
+----
+<FILE>:duckdb/extension/tpch/dbgen/answers/sf0.1/q{i}.csv
+
+endloop
+
+# run Q15 single-threaded: it is not deterministic when run on doubles with multi-threading enabled
+statement ok
+SET threads=1
+
+query I
+PRAGMA tpch(15)
+----
+<FILE>:duckdb/extension/tpch/dbgen/answers/sf0.1/q15.csv

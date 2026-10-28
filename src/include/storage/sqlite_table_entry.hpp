@@ -16,9 +16,12 @@ namespace duckdb {
 
 class SQLiteTableEntry : public TableCatalogEntry {
 public:
-	SQLiteTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info, bool all_varchar);
+	SQLiteTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info, bool all_varchar,
+	                 vector<bool> utf8_text_affinity);
 
 	bool all_varchar;
+	//! Whether each column has TEXT affinity in a UTF-8 database
+	vector<bool> utf8_text_affinity;
 
 public:
 	const ColumnList &GetColumns() const override;

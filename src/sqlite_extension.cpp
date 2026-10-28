@@ -52,6 +52,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 	config.AddExtensionOption("sqlite_disable_multithreaded_scans", "Make all scans over the SQLite DB to be performed using a single worker thread",
 	                          LogicalType::BOOLEAN, Value::BOOLEAN(false));
 
+	config.AddExtensionOption("sqlite_enable_filter_pushdown", "Whether or not to use filter pushdown",
+	                          LogicalType::BOOLEAN, Value::BOOLEAN(true));
+  
 	config.AddExtensionOption(
 	    "sqlite_keep_database_open",
 	    "Keep one SQLite handle open per attached on-disk database until DETACH, so that closing a transaction's "

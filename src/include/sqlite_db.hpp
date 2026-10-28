@@ -48,7 +48,7 @@ public:
 	vector<string> GetEntries(string entry_type);
 	CatalogType GetEntryType(const string &name);
 	void GetTableInfo(const string &table_name, ColumnList &columns, vector<unique_ptr<Constraint>> &constraints,
-	                  bool all_varchar);
+	                  bool all_varchar, vector<bool> &utf8_text_affinity);
 	void GetViewInfo(const string &view_name, string &sql);
 	void GetIndexInfo(const string &index_name, string &sql, string &table_name);
 	idx_t RunPragma(string pragma_name);
