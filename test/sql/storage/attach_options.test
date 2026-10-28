@@ -22,3 +22,41 @@ DETACH mem
 
 statement ok
 ATTACH ':memory:' AS mem (TYPE SQLITE, JOURNAL_MODE 'WAL')
+
+statement ok
+DETACH mem
+
+# journal_mode is validated against SQLite's keyword list; anything else (including a second
+# statement smuggled in behind the keyword) is rejected before it reaches the PRAGMA
+statement error
+ATTACH ':memory:' AS mem (TYPE SQLITE, JOURNAL_MODE 'WAL; PRAGMA synchronous=OFF')
+----
+Invalid value "WAL; PRAGMA synchronous=OFF" for SQLite option journal_mode
+
+statement error
+ATTACH ':memory:' AS mem (TYPE SQLITE, JOURNAL_MODE 'bogus')
+----
+Invalid value "bogus" for SQLite option journal_mode
+
+# synchronous accepts the SQLite keywords (any case) and their numeric spellings
+statement ok
+ATTACH ':memory:' AS mem (TYPE SQLITE, SYNCHRONOUS 'normal')
+
+statement ok
+DETACH mem
+
+statement ok
+ATTACH ':memory:' AS mem (TYPE SQLITE, SYNCHRONOUS 1)
+
+statement ok
+DETACH mem
+
+statement error
+ATTACH ':memory:' AS mem (TYPE SQLITE, SYNCHRONOUS 'sometimes')
+----
+Invalid value "sometimes" for SQLite option synchronous
+
+statement error
+ATTACH ':memory:' AS mem (TYPE SQLITE, SYNCHRONOUS 7)
+----
+Invalid value "7" for SQLite option synchronous

@@ -54,6 +54,12 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	config.AddExtensionOption("sqlite_enable_filter_pushdown", "Whether or not to use filter pushdown",
 	                          LogicalType::BOOLEAN, Value::BOOLEAN(true));
+  
+	config.AddExtensionOption(
+	    "sqlite_keep_database_open",
+	    "Keep one SQLite handle open per attached on-disk database until DETACH, so that closing a transaction's "
+	    "handle does not checkpoint and remove the WAL every time. Read when the database is attached",
+	    LogicalType::BOOLEAN, Value::BOOLEAN(false));
 
 	StorageExtension::Register(config, "sqlite_scanner", make_shared_ptr<SQLiteStorageExtension>());
 	ExtensionCallback::Register(config, make_shared_ptr<SQLiteVFSCleanupCallback>());

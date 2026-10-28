@@ -2,6 +2,8 @@
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
 #include "duckdb/storage/database_size.hpp"
 #include "sqlite_db.hpp"
+#include "sqlite_duckdb_vfs_cache.hpp"
+#include "duckdb/common/file_system.hpp"
 #include "storage/sqlite_schema_entry.hpp"
 #include "storage/sqlite_transaction.hpp"
 #include "duckdb/common/exception/transaction_exception.hpp"
@@ -12,6 +14,15 @@ SQLiteCatalog::SQLiteCatalog(AttachedDatabase &db_p, const string &path, SQLiteO
     : Catalog(db_p), path(path), options(std::move(options_p)), in_memory(path == ":memory:"), active_in_memory(false) {
 	if (InMemory()) {
 		in_memory_db = SQLiteDB::Open(path, options, true);
+	} else if (options.keep_database_open && !FileSystem::IsRemoteFile(path) &&
+	           !SQLiteDuckDBCacheVFS::CanHandlePath(path)) {
+		// opt-in (SET sqlite_keep_database_open): keep one handle open so per-transaction handles are never
+		// the last connection (see anchor_db). Remote / VFS-backed databases are read-only and never checkpoint.
+		anchor_db = SQLiteDB::Open(path, options, true);
+		// SQLite only counts a connection as a WAL participant (holder of the -shm "DMS" lock) once
+		// it has read from the database; a handle that was merely opened does not stop the others
+		// from checkpointing and unlinking the WAL on close. Touch the schema once so this one does.
+		anchor_db.Execute("SELECT 1 FROM sqlite_master LIMIT 1");
 	}
 }
 

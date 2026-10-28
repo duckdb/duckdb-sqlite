@@ -23,10 +23,16 @@ static unique_ptr<Catalog> SQLiteAttach(optional_ptr<StorageExtensionInfo> stora
 		if (StringUtil::CIEquals(entry.first, "busy_timeout")) {
 			options.busy_timeout = entry.second.GetValue<uint64_t>();
 		} else if (StringUtil::CIEquals(entry.first, "journal_mode")) {
-			options.journal_mode = entry.second.ToString();
+			options.journal_mode = SQLiteOpenOptions::ParseJournalMode(entry.second.ToString());
+		} else if (StringUtil::CIEquals(entry.first, "synchronous")) {
+			options.synchronous = SQLiteOpenOptions::ParseSynchronous(entry.second.ToString());
 		} else {
 			throw NotImplementedException("Unsupported parameter for SQLite Attach: %s", entry.first);
 		}
+	}
+	Value keep_open;
+	if (context.TryGetCurrentSetting("sqlite_keep_database_open", keep_open) && !keep_open.IsNull()) {
+		options.keep_database_open = BooleanValue::Get(keep_open);
 	}
 	SQLiteDB::VerifyCanAccessLocalFile(context, info.path);
 	return make_uniq<SQLiteCatalog>(db, info.path, std::move(options));
