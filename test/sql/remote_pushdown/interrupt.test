@@ -1,0 +1,42 @@
+# name: test/sql/remote_pushdown/interrupt.test
+# description: Long-running SQLite queries are interrupted when the query times out
+# group: [remote_pushdown]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_interrupt.db' AS s (TYPE SQLITE)
+
+statement ok
+DETACH s
+
+statement ok
+SET sqlite_enable_remote_pushdown = true
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_interrupt.db' AS s (TYPE SQLITE)
+
+statement ok
+CREATE TABLE s.t AS SELECT range AS i FROM range(10000)
+
+statement ok
+SET max_execution_time = 500
+
+# pushed down: the cross join runs in SQLite
+statement error
+SELECT count(*) FROM s.t t1, s.t t2, s.t t3 WHERE t1.i + t2.i + t3.i = -1
+----
+maximum execution time
+
+statement error
+SELECT * FROM sqlite_query('s', 'WITH RECURSIVE r(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM r) SELECT count(*) FROM r')
+----
+maximum execution time
+
+statement ok
+RESET max_execution_time
+
+query I
+SELECT count(*) FROM s.t
+----
+10000

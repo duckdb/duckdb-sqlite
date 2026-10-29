@@ -32,6 +32,8 @@ public:
 	optional_ptr<CatalogEntry> GetCatalogEntry(const string &table_name);
 	void DropEntry(CatalogType type, const string &table_name, bool cascade);
 	void ClearTableEntry(const string &table_name);
+	//! Remove all cached catalog entries - after a statement that was executed in SQLite modified them
+	void ClearCatalogCache();
 
 	static SQLiteTransaction &Get(ClientContext &context, Catalog &catalog);
 

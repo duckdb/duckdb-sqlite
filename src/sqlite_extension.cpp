@@ -61,6 +61,11 @@ static void LoadInternal(ExtensionLoader &loader) {
 	    "handle does not checkpoint and remove the WAL every time. Read when the database is attached",
 	    LogicalType::BOOLEAN, Value::BOOLEAN(false));
 
+	config.AddExtensionOption("sqlite_enable_remote_pushdown",
+	                          "Whether or not to push down whole queries and statements into SQLite for newly "
+	                          "attached databases. Read when the database is attached",
+	                          LogicalType::BOOLEAN, Value::BOOLEAN(false));
+
 	StorageExtension::Register(config, "sqlite_scanner", make_shared_ptr<SQLiteStorageExtension>());
 	ExtensionCallback::Register(config, make_shared_ptr<SQLiteVFSCleanupCallback>());
 }

@@ -1,0 +1,337 @@
+# name: test/sql/remote_pushdown/remote_pushdown_functions_math.test
+# description: Test remote pushdown of math functions into SQLite
+# group: [remote_pushdown]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_functions_math.db' AS l (TYPE SQLITE)
+
+statement ok
+SET sqlite_enable_remote_pushdown = true
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_functions_math.db' AS s (TYPE SQLITE)
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE n(i INTEGER, d DOUBLE, r REAL)')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO n VALUES (1, 2.5, 0.1), (-7, -2.5, 1e20), (0, 0.0, -0.5), (15, 1234.5678, 2), (NULL, NULL, NULL), (25, 0.285, 3.75), (-15, -1234.5678, -2.5)')
+
+# the results are the same with and without remote pushdown
+foreach db l s
+
+# arithmetic
+query IIIIIII
+SELECT i, i + 1, i - d, i * 2, d * d, -i, +d FROM {db}.n ORDER BY i, d
+----
+-15	-14	1219.5678	-30	1524157.65279684	15	-1234.5678
+-7	-6	-4.5	-14	6.25	7	-2.5
+0	1	0.0	0	0.0	0	0.0
+1	2	-1.5	2	6.25	-1	2.5
+15	16	-1219.5678	30	1524157.65279684	-15	1234.5678
+25	26	24.715	50	0.08122499999999999	-25	0.285
+NULL	NULL	NULL	NULL	NULL	NULL	NULL
+
+query IIIIIII
+SELECT i, i / 4, d / 2, i / d, i // 4, i % 4, -i % 4 FROM {db}.n WHERE i IS NOT NULL AND d <> 0 ORDER BY i, d
+----
+-15	-3.75	-617.2839	0.012150000996300082	-3	-3	3
+-7	-1.75	-1.25	2.8	-1	-3	3
+1	0.25	1.25	0.4	0	1	-1
+15	3.75	617.2839	0.012150000996300082	3	3	-3
+25	6.25	0.1425	87.71929824561404	6	1	-1
+
+# division by zero yields infinity
+query III
+SELECT i, i / 0, d / 0.0 FROM {db}.n WHERE i <> 0 ORDER BY i, d
+----
+-15	-inf	-inf
+-7	-inf	-inf
+1	inf	inf
+15	inf	inf
+25	inf	inf
+
+# integer division / modulo by zero raise an error
+query IIII
+SELECT abs(i), abs(d), sign(i), sign(d) FROM {db}.n ORDER BY i, d
+----
+15	1234.5678	-1	-1
+7	2.5	-1	-1
+0	0.0	0	0
+1	2.5	1	1
+15	1234.5678	1	1
+25	0.285	1	1
+NULL	NULL	NULL	NULL
+
+query IIII
+SELECT i & 6, i | 8, xor(i, 3), ~i FROM {db}.n ORDER BY i, d
+----
+0	-7	-14	14
+0	-7	-6	6
+0	8	3	-1
+0	9	2	-2
+6	15	12	-16
+0	25	26	-26
+NULL	NULL	NULL	NULL
+
+# rounding
+query IIIIII
+SELECT d, round(d), round(d, 1), round(d, 2), round(d, -1), round(d, -3) FROM {db}.n ORDER BY i, d
+----
+-1234.5678	-1235.0	-1234.6	-1234.57	-1230.0	-1000.0
+-2.5	-3.0	-2.5	-2.5	-0.0	-0.0
+0.0	0.0	0.0	0.0	0.0	0.0
+2.5	3.0	2.5	2.5	0.0	0.0
+1234.5678	1235.0	1234.6	1234.57	1230.0	1000.0
+0.285	0.0	0.3	0.28	0.0	0.0
+NULL	NULL	NULL	NULL	NULL	NULL
+
+query IIIIIII
+SELECT i, round(i), round(i, 2), round(i, -1), round(i, -2), round_even(i, -1), roundbankers(i, -1) FROM {db}.n ORDER BY i, d
+----
+-15	-15	-15	-20	0	-20	-20
+-7	-7	-7	-10	0	-10	-10
+0	0	0	0	0	0	0
+1	1	1	0	0	0	0
+15	15	15	20	0	20	20
+25	25	25	30	0	20	20
+NULL	NULL	NULL	NULL	NULL	NULL	NULL
+
+query IIII
+SELECT d, round_even(d, 0), round_even(d, 1), roundbankers(d, 0) FROM {db}.n ORDER BY i, d
+----
+-1234.5678	-1235.0	-1234.6	-1235.0
+-2.5	-2.0	-2.5	-2.0
+0.0	0.0	0.0	0.0
+2.5	2.0	2.5	2.0
+1234.5678	1235.0	1234.6	1235.0
+0.285	0.0	0.3	0.0
+NULL	NULL	NULL	NULL
+
+query IIIIIIIII
+SELECT d, ceil(d), ceiling(d), floor(d), trunc(d), even(d), ceil(i), floor(i), trunc(i) FROM {db}.n ORDER BY i, d
+----
+-1234.5678	-1234.0	-1234.0	-1235.0	-1234.0	-1236.0	-15.0	-15.0	-15
+-2.5	-2.0	-2.0	-3.0	-2.0	-4.0	-7.0	-7.0	-7
+0.0	0.0	0.0	0.0	0.0	0.0	0.0	0.0	0
+2.5	3.0	3.0	2.0	2.0	4.0	1.0	1.0	1
+1234.5678	1235.0	1235.0	1234.0	1234.0	1236.0	15.0	15.0	15
+0.285	1.0	1.0	0.0	0.0	2.0	25.0	25.0	25
+NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL
+
+query III
+SELECT d, trunc(d, 1), trunc(d, -2) FROM {db}.n ORDER BY i, d
+----
+-1234.5678	-1234.5	-1200.0
+-2.5	-2.5	-0.0
+0.0	0.0	0.0
+2.5	2.5	0.0
+1234.5678	1234.5	1200.0
+0.285	0.2	0.0
+NULL	NULL	NULL
+
+# exponents and logarithms
+query IIII
+SELECT d, sqrt(abs(d)), cbrt(d), exp(d / 1000) FROM {db}.n ORDER BY i, d
+----
+-1234.5678	35.13641700572214	-10.727659535728732	0.29096048831956806
+-2.5	1.5811388300841898	-1.3572088082974534	0.9975031223974601
+0.0	0.0	0.0	1.0
+2.5	1.5811388300841898	1.3572088082974534	1.0025031276057952
+1234.5678	35.13641700572214	10.727659535728732	3.4368927746013367
+0.285	0.5338539126015656	0.6580844365241394	1.0002850406163584
+NULL	NULL	NULL	NULL
+
+query IIIIII
+SELECT d, ln(abs(d) + 1), log(abs(d) + 1), log2(abs(d) + 1), log10(abs(d) + 1), log(2, abs(d) + 2) FROM {db}.n ORDER BY i, d
+----
+-1234.5678	7.119285900491192	3.0918665816749478	10.270958463309361	3.0918665816749478	10.272125628346405
+-2.5	1.252762968495368	0.5440680443502757	1.8073549220576042	0.5440680443502757	2.1699250014423126
+0.0	0.0	0.0	0.0	0.0	1.0
+2.5	1.252762968495368	0.5440680443502757	1.8073549220576042	0.5440680443502757	2.1699250014423126
+1234.5678	7.119285900491192	3.0918665816749478	10.270958463309361	3.0918665816749478	10.272125628346405
+0.285	0.25075871834718305	0.10890312766731332	0.3617683594191533	0.10890312766731332	1.192194165283345
+NULL	NULL	NULL	NULL	NULL	NULL
+
+query IIIIII
+SELECT d, pow(d, 2), power(i, 2), d ^ 3, i ** 2, pow(2, i) FROM {db}.n ORDER BY i, d
+----
+-1234.5678	1524157.65279684	225.0	-1881675960.2665586	225.0	3.0517578125e-05
+-2.5	6.25	49.0	-15.625	49.0	0.0078125
+0.0	0.0	0.0	0.0	0.0	1.0
+2.5	6.25	1.0	15.625	1.0	2.0
+1234.5678	1524157.65279684	225.0	1881675960.2665586	225.0	32768.0
+0.285	0.08122499999999999	625.0	0.023149124999999993	625.0	33554432.0
+NULL	NULL	NULL	NULL	NULL	NULL
+
+query II
+SELECT ln(0), log10(0) FROM {db}.n WHERE i = 0
+----
+-inf	-inf
+
+# trigonometry
+query IIIIIII
+SELECT d, sin(d), cos(d), tan(d), cot(d + 10000), atan(d), atan2(d, i) FROM {db}.n ORDER BY i, d
+----
+-1234.5678	-0.07803344920002027	-0.9969507414140119	0.07827212113744211	2.4418118387802257	-1.5699863269056236	-1.5829457299728746
+-2.5	-0.5984721441039564	-0.8011436155469337	0.7470222972386602	0.7118277912442376	-1.1902899496825317	-2.79856871316909
+0.0	0.0	1.0	0.0	3.1155449575614393	0.0	0.0
+2.5	0.5984721441039564	-0.8011436155469337	-0.7470222972386602	-2.909914825076415	1.1902899496825317	1.1902899496825317
+1234.5678	0.07803344920002027	-0.9969507414140119	-0.07827212113744211	4.223845316888107	1.5699863269056236	1.5586469236169187
+0.285	0.281157451295294	0.9596616526574011	0.2929756029291577	1.475638248232971	0.2776391571196562	0.011399506190504716
+NULL	NULL	NULL	NULL	NULL	NULL	NULL
+
+query IIIII
+SELECT d, asin(d / 10000), acos(d / 10000), degrees(d), radians(d) FROM {db}.n ORDER BY i, d
+----
+-1234.5678	-0.12377256335733586	1.6945688901522324	-70735.52446275111	-21.54727294910285
+-2.5	-0.0002500000026041667	1.5710463267975008	-143.2394487827058	-0.04363323129985824
+0.0	0.0	1.5707963267948966	0.0	0.0
+2.5	0.0002500000026041667	1.5705463267922923	143.2394487827058	0.04363323129985824
+1234.5678	0.12377256335733586	1.4470237634375607	70735.52446275111	21.54727294910285
+0.285	2.8500000003858186e-05	1.5707678267948928	16.32929716122846	0.0049741883681838385
+NULL	NULL	NULL	NULL	NULL
+
+query IIIIII
+SELECT d, sinh(d / 1000), cosh(d / 1000), tanh(d), asinh(d), atanh(d / 10000) FROM {db}.n ORDER BY i, d
+----
+-1234.5678	-1.5729661431408843	1.8639266314604523	-1.0	-7.811623572882718	-0.12408980445762494
+-2.5	-0.0025000026041674807	1.0000031250016277	-0.9866142981514303	-1.6472311463710958	-0.0002500000052083335
+0.0	0.0	1.0	0.0	0.0	0.0
+2.5	0.0025000026041674807	1.0000031250016277	0.9866142981514303	1.6472311463710958	0.0002500000052083335
+1234.5678	1.5729661431408843	1.8639266314604523	1.0	7.811623572882718	0.12408980445762494
+0.285	0.0002850000038581875	1.0000000406125003	0.2775263502976838	0.2812763716193096	2.8500000007716373e-05
+NULL	NULL	NULL	NULL	NULL	NULL
+
+query IIII
+SELECT isnan(d), isinf(d), isfinite(d), isinf(d / 0) FROM {db}.n WHERE d IS NULL OR d <> 0 ORDER BY i, d
+----
+false	false	true	true
+false	false	true	true
+false	false	true	true
+false	false	true	true
+false	false	true	true
+NULL	NULL	NULL	NULL
+
+# REAL columns are read as DOUBLE
+query IIII
+SELECT r, r * 2, round(r, 1), r + i FROM {db}.n ORDER BY i, d
+----
+-2.5	-5.0	-2.5	-17.5
+1e+20	2e+20	1e+20	1e+20
+-0.5	-1.0	-0.5	-0.5
+0.1	0.2	0.1	1.1
+2.0	4.0	2.0	17.0
+3.75	7.5	3.8	28.75
+NULL	NULL	NULL	NULL
+
+# comparisons of integers and doubles
+query I
+SELECT i FROM {db}.n WHERE i > 1.5 ORDER BY i
+----
+15
+25
+
+query I
+SELECT i FROM {db}.n WHERE d >= 2 AND d < 1234.6 ORDER BY i
+----
+1
+15
+
+query I
+SELECT i FROM {db}.n WHERE i BETWEEN -7 AND 15 AND d IN (2.5, -2.5, 1234.5678) ORDER BY i
+----
+-7
+1
+15
+
+# aggregates
+query IIIIIII
+SELECT sum(i), round(sum(d), 6), avg(i), round(avg(d), 6), min(d), max(i), count(d) FROM {db}.n
+----
+19	0.285	3.1666666666666665	0.0475	-1234.5678	25	6
+
+query III
+SELECT typeof(sum(i)), typeof(sum(d)), typeof(avg(i)) FROM {db}.n
+----
+HUGEINT	DOUBLE	DOUBLE
+
+endloop
+
+# the functions are executed in SQLite
+query II
+EXPLAIN SELECT i / 4, i // 4, i % 4 FROM s.n
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*\(CAST\("i" AS DOUBLE\) / 4\).*\("i" / 4\).*\("i" % 4\).*
+
+query II
+EXPLAIN SELECT i / d FROM s.n
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*CASE WHEN "d" = 0 THEN duckdb_divide.*ELSE CAST\("i" AS DOUBLE\) / "d" END.*
+
+query II
+EXPLAIN SELECT round(d, 1), round(i, -1), sqrt(d), log(2, d) FROM s.n
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*duckdb_round\("d", 1, 0\).*duckdb_round_integer\("i", -1, 0\).*duckdb_sqrt\("d"\).*duckdb_log\(2, "d"\).*
+
+# integer division and modulo by zero raise an error, like in DuckDB
+foreach db l s
+
+statement error
+SELECT i // (i - i) FROM {db}.n
+----
+Division by zero
+
+statement error
+SELECT i % (i - i) FROM {db}.n
+----
+Division by zero
+
+endloop
+
+# SQLite has no NaN - DuckDB results that are NaN raise an error
+query I
+SELECT sqrt(d) FROM l.n WHERE d < 0 ORDER BY d
+----
+nan
+nan
+
+statement error
+SELECT sqrt(d) FROM s.n WHERE d < 0 ORDER BY d
+----
+NaN cannot be represented in SQLite
+
+query I
+SELECT (i - i) / (i - i) FROM l.n WHERE i = 0
+----
+nan
+
+statement error
+SELECT (i - i) / (i - i) FROM s.n WHERE i = 0
+----
+NaN cannot be represented in SQLite
+
+# without IEEE semantics, the functions are executed locally
+statement ok
+SET ieee_floating_point_ops = false
+
+query II
+EXPLAIN SELECT sqrt(d) FROM s.n
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+statement ok
+RESET ieee_floating_point_ops
+
+# DECIMAL arithmetic is exact in DuckDB - it is only pushed down when the result is a DOUBLE
+query II
+EXPLAIN SELECT i * 1.5 FROM s.n
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+query II
+EXPLAIN SELECT d * 1.5 FROM s.n
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*\("d" \* 1.5\).*

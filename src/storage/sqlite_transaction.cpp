@@ -21,6 +21,7 @@ public:
 	optional_ptr<CatalogEntry> InsertEntry(const string &entry_name, unique_ptr<CatalogEntry> entry);
 	optional_ptr<CatalogEntry> GetEntry(const string &entry_name);
 	void EraseEntry(const string &entry_name);
+	void Clear();
 
 private:
 	mutex lock;
@@ -51,6 +52,11 @@ optional_ptr<CatalogEntry> SQLiteCatalogMap::GetEntry(const string &entry_name) 
 void SQLiteCatalogMap::EraseEntry(const string &entry_name) {
 	lock_guard<mutex> guard(lock);
 	catalog_entries.erase(entry_name);
+}
+
+void SQLiteCatalogMap::Clear() {
+	lock_guard<mutex> guard(lock);
+	catalog_entries.clear();
 }
 
 SQLiteTransaction::SQLiteTransaction(SQLiteCatalog &sqlite_catalog, TransactionManager &manager, ClientContext &context)
@@ -199,9 +205,13 @@ optional_ptr<CatalogEntry> SQLiteTransaction::GetCatalogEntry(const string &entr
 		vector<bool> utf8_text_affinity;
 		GetDB().GetTableInfo(entry_name, info.columns, info.constraints, all_varchar, utf8_text_affinity);
 		D_ASSERT(!info.columns.empty());
+		auto binary_collation = GetDB().GetBinaryCollation(entry_name, info.columns);
 
-		result = make_uniq<SQLiteTableEntry>(sqlite_catalog, sqlite_catalog.GetMainSchema(), info, all_varchar,
-		                                     std::move(utf8_text_affinity));
+		auto table = make_uniq<SQLiteTableEntry>(sqlite_catalog, sqlite_catalog.GetMainSchema(), info, all_varchar,
+		                                         std::move(utf8_text_affinity), std::move(binary_collation));
+		table->indexed_columns = GetDB().GetIndexedColumns(entry_name);
+		table->real_affinity = GetDB().GetRealAffinity(entry_name, table->GetColumns());
+		result = std::move(table);
 		break;
 	}
 	case CatalogType::VIEW_ENTRY: {
@@ -248,6 +258,10 @@ optional_ptr<CatalogEntry> SQLiteTransaction::GetCatalogEntry(const string &entr
 
 void SQLiteTransaction::ClearTableEntry(const string &table_name) {
 	catalog_map->EraseEntry(table_name);
+}
+
+void SQLiteTransaction::ClearCatalogCache() {
+	catalog_map->Clear();
 }
 
 string GetDropSQL(CatalogType type, const string &table_name, bool cascade) {

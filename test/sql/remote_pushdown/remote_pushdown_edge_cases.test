@@ -1,0 +1,328 @@
+# name: test/sql/remote_pushdown/remote_pushdown_edge_cases.test
+# description: Test edge cases of the remote pushdown into SQLite
+# group: [remote_pushdown]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_edge_cases.db' AS l (TYPE SQLITE)
+
+statement ok
+SET sqlite_enable_remote_pushdown = true
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_edge_cases.db' AS s (TYPE SQLITE)
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE t(i INTEGER, g INTEGER, v TEXT, d DOUBLE, b INTEGER)')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO t VALUES (1, 1, ''a'', 1.5, 1), (2, 1, ''b'', 2.5, 0), (3, 2, ''c'', NULL, 1), (4, 2, NULL, 4.0, NULL), (5, 3, ''e'', -1.0, 0), (6, NULL, ''f'', 6.5, 1), (NULL, NULL, NULL, NULL, NULL)')
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE empty(i INTEGER, v TEXT)')
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE dates(i INTEGER, d DATE)')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO dates VALUES (1, ''2020-01-01''), (2, ''2021-06-15'')')
+
+statement ok
+FROM sqlite_query(l, 'CREATE VIEW sv AS SELECT i, v FROM t WHERE i > 2')
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE wr(k INTEGER PRIMARY KEY, d DATE) WITHOUT ROWID')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO wr VALUES (1, ''2020-01-01''), (2, ''2022-02-02'')')
+
+# the results are the same with and without remote pushdown
+foreach db l s
+
+# empty results
+query II
+SELECT i, v FROM {db}.t WHERE i > 100 ORDER BY i
+----
+
+query II
+SELECT g, count(*) FROM {db}.empty JOIN {db}.t USING (i) GROUP BY g ORDER BY g
+----
+
+query IIIII
+SELECT count(*), sum(i), min(v), avg(d), string_agg(v, ',') FROM {db}.t WHERE false
+----
+0	NULL	NULL	NULL	NULL
+
+# three-valued logic
+query IIIII
+SELECT i, d > 2 AND v IS NOT NULL, d > 2 OR v = 'a', NOT (d > 2), d IS NULL OR d = 2.5 FROM {db}.t ORDER BY i
+----
+1	false	true	true	false
+2	true	true	false	true
+3	NULL	NULL	NULL	true
+4	false	true	false	false
+5	false	false	true	false
+6	true	true	false	false
+NULL	false	NULL	NULL	true
+
+query I
+SELECT i FROM {db}.t WHERE NOT (i IN (1, NULL)) ORDER BY i
+----
+
+query I
+SELECT i FROM {db}.t WHERE i NOT IN (SELECT g FROM {db}.t WHERE g IS NOT NULL) ORDER BY i
+----
+4
+5
+6
+
+query II
+SELECT i, CASE WHEN d > 2 THEN 'big' WHEN d IS NULL THEN 'null' ELSE 'small' END FROM {db}.t ORDER BY i
+----
+1	small
+2	big
+3	null
+4	big
+5	small
+6	big
+NULL	null
+
+query III
+SELECT i, i IS DISTINCT FROM g, i IS NOT DISTINCT FROM g FROM {db}.t ORDER BY i
+----
+1	false	true
+2	true	false
+3	true	false
+4	true	false
+5	true	false
+6	true	false
+NULL	false	true
+
+# constant expressions are folded locally
+query IIII
+SELECT i, 1 + 2, 'a' || 'b', upper('x') FROM {db}.t ORDER BY i
+----
+1	3	ab	X
+2	3	ab	X
+3	3	ab	X
+4	3	ab	X
+5	3	ab	X
+6	3	ab	X
+NULL	3	ab	X
+
+query I
+SELECT i FROM {db}.t WHERE i > 1 + 2 ORDER BY i
+----
+4
+5
+6
+
+# deeply nested expressions
+query II
+SELECT i, ((((((((((i + 1) * 2) - 3) + 4) * 5) - 6) + 7) * 8) - 9) + 10) FROM {db}.t ORDER BY i
+----
+1	209
+2	289
+3	369
+4	449
+5	529
+6	609
+NULL	NULL
+
+query I
+SELECT i FROM {db}.t WHERE (((i > 1 AND i < 6) OR (v = 'a' AND d > 0)) AND NOT (g IS NULL OR g = 3)) ORDER BY i
+----
+1
+2
+3
+4
+
+# strings with quotes, backslashes and unicode
+query IIIII
+SELECT i, v || '''', v || '"', v || '\', v || 'ä€😀' FROM {db}.t ORDER BY i
+----
+1	a'	a"	a\	aä€😀
+2	b'	b"	b\	bä€😀
+3	c'	c"	c\	cä€😀
+4	NULL	NULL	NULL	NULL
+5	e'	e"	e\	eä€😀
+6	f'	f"	f\	fä€😀
+NULL	NULL	NULL	NULL	NULL
+
+# DISTINCT on expressions
+query II
+SELECT DISTINCT i % 2, g IS NULL FROM {db}.t ORDER BY 1, 2
+----
+0	false
+0	true
+1	false
+NULL	true
+
+query II
+SELECT count(DISTINCT i % 3), count(DISTINCT v || '') FROM {db}.t
+----
+3	5
+
+# subqueries without rows
+query III
+SELECT i, (SELECT max(i) FROM {db}.empty), (SELECT v FROM {db}.empty LIMIT 1) FROM {db}.t ORDER BY i
+----
+1	NULL	NULL
+2	NULL	NULL
+3	NULL	NULL
+4	NULL	NULL
+5	NULL	NULL
+6	NULL	NULL
+NULL	NULL	NULL
+
+query I
+SELECT i FROM {db}.t WHERE EXISTS (SELECT 1 FROM {db}.empty) ORDER BY i
+----
+
+query I
+SELECT i FROM {db}.t WHERE i NOT IN (SELECT i FROM {db}.empty) ORDER BY i
+----
+1
+2
+3
+4
+5
+6
+NULL
+
+# integer overflow raises an error in both
+# the row id
+query II
+SELECT rowid, i FROM {db}.t ORDER BY rowid DESC
+----
+7	NULL
+6	6
+5	5
+4	4
+3	3
+2	2
+1	1
+
+query II
+SELECT rowid, d FROM {db}.dates ORDER BY rowid DESC
+----
+2	2021-06-15
+1	2020-01-01
+
+query II
+SELECT d, k FROM {db}.wr ORDER BY d DESC
+----
+2022-02-02	2
+2020-01-01	1
+
+# views of the SQLite database are executed with the semantics of DuckDB
+query II
+SELECT count(*), max(v) FROM {db}.sv
+----
+4	f
+
+endloop
+
+# integer division by zero raises an error in both
+foreach db l s
+
+statement error
+SELECT i // (i - i) FROM {db}.t
+----
+Division by zero
+
+endloop
+
+# volatile functions are executed locally
+query II
+EXPLAIN SELECT i FROM s.t WHERE random() < 2
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+# macros are executed locally
+statement ok
+CREATE MACRO plus_one(x) AS x + 1
+
+query I
+SELECT plus_one(i) FROM s.t WHERE i < 3 ORDER BY i
+----
+2
+3
+
+query II
+EXPLAIN SELECT plus_one(i) FROM s.t WHERE i < 3 ORDER BY i
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+# DuckDB-specific constructs are executed locally
+query II
+EXPLAIN SELECT * EXCLUDE (v) FROM s.t ORDER BY i
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+query II
+EXPLAIN SELECT COLUMNS('i|g') FROM s.t ORDER BY i
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+query II
+EXPLAIN SELECT i FROM s.t USING SAMPLE 2 ROWS
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+query II
+EXPLAIN SELECT [i, g] FROM s.t ORDER BY i
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+query II
+EXPLAIN SELECT {'a': i} FROM s.t ORDER BY i
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+query II
+EXPLAIN SELECT TRY(i // 0) FROM s.t ORDER BY i
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+# prepared statement parameters are not pushed down
+statement ok
+PREPARE p AS SELECT i FROM s.t WHERE i > ? ORDER BY i
+
+query I
+EXECUTE p(4)
+----
+5
+6
+
+# the database must use the UTF-8 encoding - strings are compared byte-wise like DuckDB compares them
+statement ok
+ATTACH 'data/db/utf16.db' AS u16 (TYPE SQLITE, READ_ONLY)
+
+query II
+EXPLAIN SELECT count(*) FROM u16.t
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+query II
+EXPLAIN SELECT rowid, d FROM s.dates ORDER BY rowid DESC
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*duckdb_date\("d"\) AS "d", "rowid" AS "rowid" FROM "dates".*
+
+query II
+EXPLAIN SELECT count(*), max(v) FROM s.sv
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+# a double-quoted identifier that does not resolve is read as a string by SQLite - such queries are executed locally
+query II
+EXPLAIN SELECT rowid, * FROM s.dates ORDER BY 1 DESC
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+query III
+SELECT rowid, * FROM s.dates ORDER BY 1 DESC
+----
+2	2	2021-06-15
+1	1	2020-01-01

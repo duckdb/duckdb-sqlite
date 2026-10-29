@@ -17,11 +17,17 @@ namespace duckdb {
 class SQLiteTableEntry : public TableCatalogEntry {
 public:
 	SQLiteTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info, bool all_varchar,
-	                 vector<bool> utf8_text_affinity);
+	                 vector<bool> utf8_text_affinity, vector<bool> binary_collation);
 
 	bool all_varchar;
 	//! Whether each column has TEXT affinity in a UTF-8 database
 	vector<bool> utf8_text_affinity;
+	//! Whether each column compares strings with the BINARY collation
+	vector<bool> binary_collation;
+	//! Whether each column has REAL affinity - other columns that are read as DOUBLE can store integers
+	vector<bool> real_affinity;
+	//! The columns that rows can be looked up by - the row id, and the leading columns of indexes
+	case_insensitive_set_t indexed_columns;
 
 public:
 	const ColumnList &GetColumns() const override;

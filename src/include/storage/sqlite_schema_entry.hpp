@@ -12,6 +12,13 @@
 
 namespace duckdb {
 class SQLiteTransaction;
+struct CreateTableInfo;
+struct CreateViewInfo;
+
+//! The CREATE TABLE statement for a (bound) table definition - the column types are converted to SQLite types
+string GetCreateTableSQL(CreateTableInfo &info);
+//! The CREATE VIEW statement for a view definition (written in DuckDB's SQL dialect)
+string GetCreateViewSQL(CreateViewInfo &info);
 
 class SQLiteSchemaEntry : public SchemaCatalogEntry {
 public:

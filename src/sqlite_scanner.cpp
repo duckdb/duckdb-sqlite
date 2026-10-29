@@ -23,6 +23,26 @@
 
 namespace duckdb {
 
+//! Interrupts a SQLite statement when the query is interrupted (or times out)
+static int SqliteProgressHandler(void *data) {
+	auto &context = *static_cast<ClientContext *>(data);
+	try {
+		context.InterruptCheck();
+	} catch (std::exception &) {
+		return 1;
+	}
+	return 0;
+}
+
+static void SqliteSetProgressHandler(SQLiteDB &db, optional_ptr<ClientContext> context) {
+	static constexpr int PROGRESS_HANDLER_INSTRUCTIONS = 10000;
+	if (context) {
+		sqlite3_progress_handler(db.db, PROGRESS_HANDLER_INSTRUCTIONS, SqliteProgressHandler, context.get());
+	} else {
+		sqlite3_progress_handler(db.db, 0, nullptr, nullptr);
+	}
+}
+
 struct SqliteLocalState : public LocalTableFunctionState {
 	SQLiteDB *db = nullptr;
 	SQLiteDB owned_db;
@@ -38,6 +58,9 @@ struct SqliteLocalState : public LocalTableFunctionState {
 	idx_t scan_count = 1;
 
 	~SqliteLocalState() {
+		if (db && db->IsOpen()) {
+			SqliteSetProgressHandler(*db, nullptr);
+		}
 	}
 };
 
@@ -57,7 +80,6 @@ struct SqliteGlobalState : public GlobalTableFunctionState {
 
 static unique_ptr<FunctionData> SqliteBind(ClientContext &context, TableFunctionBindInput &input,
                                            vector<LogicalType> &return_types, vector<Identifier> &names) {
-
 	auto result = make_uniq<SqliteBindData>();
 	result->file_name = input.inputs[0].GetValue<string>();
 	result->table_name = input.inputs[1].GetValue<string>();
@@ -112,7 +134,8 @@ static string SqliteGetScanSQL(const SqliteBindData &bind_data, const vector<col
 		return bind_data.rowid_name;
 	});
 
-	auto sql = StringUtil::Format("SELECT %s FROM \"%s\"", col_names, SQLiteUtils::SanitizeIdentifier(bind_data.table_name));
+	auto sql =
+	    StringUtil::Format("SELECT %s FROM \"%s\"", col_names, SQLiteUtils::SanitizeIdentifier(bind_data.table_name));
 	vector<string> conditions;
 	if (bind_data.rows_per_group.IsValid()) {
 		conditions.push_back(bind_data.rowid_name + " BETWEEN ? AND ?");
@@ -150,6 +173,11 @@ static void SqliteInitInternal(ClientContext &context, const SqliteBindData &bin
 	}
 	string sql = SqliteGetScanSQL(bind_data, local_state.column_ids, local_state.filter_condition);
 	SqlitePrepareStatement(local_state, sql);
+	if (bind_data.typed_result && local_state.stmt.GetColumnCount() != bind_data.types.size()) {
+		// sqlite_query with column_types does not prepare the query when it is bound
+		throw InvalidInputException("The query returns %llu columns, but %llu column_types were specified",
+		                            local_state.stmt.GetColumnCount(), bind_data.types.size());
+	}
 
 	idx_t param_idx = 0;
 	for (; param_idx < bind_data.params.size(); param_idx++) {
@@ -249,12 +277,24 @@ SqliteInitLocalState(ExecutionContext &context, TableFunctionInitInput &input, G
 	if (!SqliteParallelStateNext(context.client, bind_data, *result, gstate)) {
 		result->done = true;
 	}
+	SqliteSetProgressHandler(*result->db, &context.client);
 	return std::move(result);
 }
 
 static unique_ptr<GlobalTableFunctionState> SqliteInitGlobalState(ClientContext &context,
                                                                   TableFunctionInitInput &input) {
 	auto &bind_data = input.bind_data->Cast<SqliteBindData>();
+	if (!bind_data.preliminary_queries.empty()) {
+		D_ASSERT(!bind_data.catalog_name.empty());
+		auto attached_catalog = SQLiteCatalog::Lookup(context, bind_data.catalog_name);
+		auto &transaction = SQLiteTransaction::Get(context, attached_catalog.Get<SQLiteCatalog>());
+		for (auto &query : bind_data.preliminary_queries) {
+			transaction.GetDB().Execute(query);
+		}
+		if (bind_data.clear_catalog_cache) {
+			transaction.ClearCatalogCache();
+		}
+	}
 	auto result = make_uniq<SqliteGlobalState>(SqliteMaxThreads(context, input.bind_data.get()));
 	result->position = 0;
 	if (bind_data.rows_per_group.IsValid()) {
@@ -274,6 +314,49 @@ static timestamp_t ConvertTimestampInteger(sqlite3_stmt *stmt, int col) {
 static timestamp_t ConvertTimestampFloat(sqlite3_stmt *stmt, int col) {
 	int64_t timestamp_micros = Cast::Operation<double, int64_t>(sqlite3_column_double(stmt, col) * 1000000.0);
 	return Timestamp::FromEpochMicroSeconds(timestamp_micros);
+}
+
+//! Read a value of a typed sqlite_query result - values of other storage classes are converted to the column type
+static void SqliteReadTypedValue(sqlite3_stmt *stmt, int col, int sqlite_column_type, Vector &out_vec, idx_t out_idx) {
+	auto &type = out_vec.GetType();
+	switch (type.id()) {
+	case LogicalTypeId::BIGINT:
+		if (sqlite_column_type == SQLITE_INTEGER) {
+			FlatVector::GetDataMutable<int64_t>(out_vec)[out_idx] = sqlite3_column_int64(stmt, col);
+			return;
+		}
+		break;
+	case LogicalTypeId::DOUBLE:
+		if (sqlite_column_type == SQLITE_INTEGER || sqlite_column_type == SQLITE_FLOAT) {
+			FlatVector::GetDataMutable<double>(out_vec)[out_idx] = sqlite3_column_double(stmt, col);
+			return;
+		}
+		break;
+	case LogicalTypeId::BOOLEAN:
+		if (sqlite_column_type == SQLITE_INTEGER) {
+			FlatVector::GetDataMutable<bool>(out_vec)[out_idx] = sqlite3_column_int64(stmt, col) != 0;
+			return;
+		}
+		break;
+	case LogicalTypeId::VARCHAR:
+		if (sqlite_column_type == SQLITE_TEXT) {
+			FlatVector::GetDataMutable<string_t>(out_vec)[out_idx] = StringVector::AddString(
+			    out_vec, const_char_ptr_cast(sqlite3_column_text(stmt, col)), sqlite3_column_bytes(stmt, col));
+			return;
+		}
+		break;
+	case LogicalTypeId::BLOB:
+		if (sqlite_column_type == SQLITE_BLOB) {
+			FlatVector::GetDataMutable<string_t>(out_vec)[out_idx] = StringVector::AddStringOrBlob(
+			    out_vec, const_char_ptr_cast(sqlite3_column_blob(stmt, col)), sqlite3_column_bytes(stmt, col));
+			return;
+		}
+		break;
+	default:
+		break;
+	}
+	auto value = SQLiteUtils::ToDuckDBValue(SQLiteUtils::ReadColumn(stmt, col), type);
+	out_vec.SetValue(out_idx, value);
 }
 
 static void SqliteApplyFilters(SqliteLocalState &state, DataChunk &output) {
@@ -311,7 +394,19 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 		SQLiteCatalog &catalog = attached_catalog.Get<SQLiteCatalog>();
 		auto &transaction = SQLiteTransaction::Get(context, catalog);
 		auto &con = transaction.GetDB();
-		int64_t affected_rows = con.Execute(bind_data.sql);
+		SqliteSetProgressHandler(con, &context);
+		int64_t affected_rows;
+		try {
+			affected_rows = con.Execute(bind_data.sql);
+		} catch (std::exception &) {
+			SqliteSetProgressHandler(con, nullptr);
+			context.BlockingInterruptCheck();
+			throw;
+		}
+		SqliteSetProgressHandler(con, nullptr);
+		if (bind_data.clear_catalog_cache) {
+			transaction.ClearCatalogCache();
+		}
 		int64_t *vec_data = FlatVector::GetDataMutable<int64_t>(output.data[0]);
 		vec_data[0] = affected_rows;
 		state.done = true;
@@ -339,7 +434,14 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 				break;
 			}
 			auto &stmt = state.stmt;
-			auto has_more = stmt.Step();
+			bool has_more;
+			try {
+				has_more = stmt.Step();
+			} catch (std::exception &) {
+				// the statement is interrupted by the progress handler when the query is interrupted
+				context.BlockingInterruptCheck();
+				throw;
+			}
 			if (!has_more) {
 				state.done = true;
 				output.SetChildCardinality(out_idx);
@@ -360,6 +462,10 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 				// sqlite3_value_*() from a parallel scan; sqlite3_column_*() hold the connection mutex.
 				auto raw = stmt.stmt;
 				auto col = int(col_idx);
+				if (bind_data.typed_result) {
+					SqliteReadTypedValue(raw, col, sqlite_column_type, out_vec, out_idx);
+					continue;
+				}
 				switch (out_vec.GetType().id()) {
 				case LogicalTypeId::BIGINT:
 					stmt.CheckTypeMatches(bind_data, sqlite_column_type, SQLITE_INTEGER, col_idx);
@@ -380,10 +486,11 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 						FlatVector::GetDataMutable<date_t>(out_vec)[out_idx] =
 						    Timestamp::GetDate(ConvertTimestampInteger(raw, col));
 					} else if (sqlite_column_type == SQLITE_FLOAT) {
-						FlatVector::GetDataMutable<date_t>(out_vec)[out_idx] = Timestamp::GetDate(ConvertTimestampFloat(raw, col));
-					} else if (sqlite_column_type == SQLITE_TEXT) {
 						FlatVector::GetDataMutable<date_t>(out_vec)[out_idx] =
-						    Date::FromCString((const char *)sqlite3_column_text(raw, col), sqlite3_column_bytes(raw, col));
+						    Timestamp::GetDate(ConvertTimestampFloat(raw, col));
+					} else if (sqlite_column_type == SQLITE_TEXT) {
+						FlatVector::GetDataMutable<date_t>(out_vec)[out_idx] = Date::FromCString(
+						    (const char *)sqlite3_column_text(raw, col), sqlite3_column_bytes(raw, col));
 					} else {
 						throw NotImplementedException("Unimplemented SQLite type for column of type DATE\n* SET "
 						                              "sqlite_all_varchar=true to "
@@ -406,8 +513,8 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 						FlatVector::GetDataMutable<timestamp_t>(out_vec)[out_idx] = ConvertTimestampFloat(raw, col);
 					} else if (sqlite_column_type == SQLITE_TEXT) {
 						// ISO-8601
-						FlatVector::GetDataMutable<timestamp_t>(out_vec)[out_idx] =
-						    Timestamp::FromCString((const char *)sqlite3_column_text(raw, col), sqlite3_column_bytes(raw, col));
+						FlatVector::GetDataMutable<timestamp_t>(out_vec)[out_idx] = Timestamp::FromCString(
+						    (const char *)sqlite3_column_text(raw, col), sqlite3_column_bytes(raw, col));
 					} else {
 						throw NotImplementedException("Unimplemented SQLite type for column of type TIMESTAMP\n* SET "
 						                              "sqlite_all_varchar=true to "
@@ -460,7 +567,7 @@ SqliteStatistics(ClientContext &context, const FunctionData *bind_data_p,
 */
 
 static void SqliteScanSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
-                               const BoundTableFunction &function) {
+                                const BoundTableFunction &function) {
 	throw NotImplementedException("SqliteScanSerialize");
 }
 
@@ -493,7 +600,6 @@ struct AttachFunctionData : public TableFunctionData {
 
 static unique_ptr<FunctionData> AttachBind(ClientContext &context, TableFunctionBindInput &input,
                                            vector<LogicalType> &return_types, vector<Identifier> &names) {
-
 	auto result = make_uniq<AttachFunctionData>();
 	result->file_name = input.inputs[0].GetValue<string>();
 

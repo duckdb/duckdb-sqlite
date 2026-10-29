@@ -34,6 +34,13 @@ struct SqliteBindData : public TableFunctionData {
 	optional_idx rows_per_group = 122880;
 
 	bool command_only = false;
+	//! Whether the result columns are converted to their types whatever their SQLite storage class (sqlite_query
+	//! with column_types)
+	bool typed_result = false;
+	//! Statements that are executed before the query (sqlite_query)
+	vector<string> preliminary_queries;
+	//! Whether the cached catalog entries of the transaction are cleared after executing the statement
+	bool clear_catalog_cache = false;
 
 	QualifiedName qualified_table_name;
 	Identifier catalog_name;

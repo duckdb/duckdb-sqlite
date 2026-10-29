@@ -10,9 +10,10 @@
 namespace duckdb {
 
 SQLiteTableEntry::SQLiteTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info,
-                                   bool all_varchar, vector<bool> utf8_text_affinity_p)
+                                   bool all_varchar, vector<bool> utf8_text_affinity_p, vector<bool> binary_collation_p)
     : TableCatalogEntry(catalog, schema, info), all_varchar(all_varchar),
-      utf8_text_affinity(std::move(utf8_text_affinity_p)), columns(std::move(info.columns)) {
+      utf8_text_affinity(std::move(utf8_text_affinity_p)), binary_collation(std::move(binary_collation_p)),
+      columns(std::move(info.columns)) {
 }
 
 const ColumnList &SQLiteTableEntry::GetColumns() const {

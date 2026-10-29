@@ -1,0 +1,84 @@
+# name: test/sql/remote_pushdown/remote_pushdown_values.test
+# description: Test remote pushdown of VALUES lists into SQLite
+# group: [remote_pushdown]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_values.db' AS l (TYPE SQLITE)
+
+statement ok
+SET sqlite_enable_remote_pushdown = true
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_values.db' AS s (TYPE SQLITE)
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE t(i INTEGER, g INTEGER, v TEXT, d DOUBLE, b INTEGER)')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO t VALUES (1, 1, ''a'', 1.5, 1), (2, 1, ''b'', 2.5, 0), (3, 2, ''c'', NULL, 1), (4, 2, NULL, 4.0, NULL), (5, 3, ''e'', -1.0, 0), (6, NULL, ''f'', 6.5, 1), (NULL, NULL, NULL, NULL, NULL)')
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE empty(i INTEGER, v TEXT)')
+
+# the results are the same with and without remote pushdown
+foreach db l s
+
+query IIIIIII
+SELECT * FROM (VALUES (1, 'a'), (2, 'b')) v(x, y) JOIN {db}.t ON t.i = v.x ORDER BY x
+----
+1	a	1	1	a	1.5	1
+2	b	2	1	b	2.5	0
+
+query II
+SELECT v.*, t.v FROM (VALUES (1), (3), (7)) v(k) LEFT JOIN {db}.t ON t.i = v.k ORDER BY k
+----
+1	a
+3	c
+7	NULL
+
+query II
+SELECT t.i, x.col0 FROM {db}.t, (VALUES (10), (20)) x ORDER BY 1, 2
+----
+1	10
+1	20
+2	10
+2	20
+3	10
+3	20
+4	10
+4	20
+5	10
+5	20
+6	10
+6	20
+NULL	10
+NULL	20
+
+query I
+SELECT i FROM {db}.t WHERE i IN (SELECT * FROM (VALUES (2), (4), (6))) ORDER BY i
+----
+2
+4
+6
+
+query I
+SELECT i FROM {db}.t WHERE (i, v) IN (SELECT * FROM (VALUES (1, 'a'), (2, 'x'))) ORDER BY i
+----
+1
+
+query II
+SELECT k, count(t.i) FROM (VALUES (1), (2), (NULL)) v(k) LEFT JOIN {db}.t ON t.g = v.k GROUP BY k ORDER BY k
+----
+1	2
+2	2
+NULL	0
+
+query IIIIIIIII
+SELECT * FROM (VALUES (1, 2.5, 'x', NULL), (2, NULL, NULL, DATE '2020-01-01')) v(a, b, c, d) JOIN {db}.t ON t.i = v.a ORDER BY a
+----
+1	2.5	x	NULL	1	1	a	1.5	1
+2	NULL	NULL	2020-01-01	2	1	b	2.5	0
+
+endloop

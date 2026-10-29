@@ -1,0 +1,184 @@
+# name: test/sql/remote_pushdown/basic_remote_pushdown.test
+# description: Test basic remote pushdown of queries into SQLite
+# group: [remote_pushdown]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/rp_basic.db' AS l (TYPE SQLITE)
+
+statement ok
+DETACH l
+
+# remote pushdown is disabled by default
+query I
+SELECT current_setting('sqlite_enable_remote_pushdown')
+----
+false
+
+statement ok
+ATTACH '{TEST_DIR}/rp_basic.db' AS l (TYPE SQLITE)
+
+statement ok
+CREATE TABLE l.t AS SELECT i, i % 3 AS g, 'str' || i AS v, i / 2 AS d FROM range(10) t(i)
+
+query II
+EXPLAIN SELECT SUM(i) FROM l.t
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+# the setting is read when attaching the database
+statement ok
+SET sqlite_enable_remote_pushdown = true
+
+query II
+EXPLAIN SELECT SUM(i) FROM l.t
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+statement ok
+ATTACH '{TEST_DIR}/rp_basic.db' AS s (TYPE SQLITE)
+
+# aggregates are pushed down
+query II
+EXPLAIN SELECT SUM(i) FROM s.t
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*SELECT sum\("i"\) AS "sum\(i\)" FROM "t".*
+
+foreach db l s
+
+query I
+SELECT SUM(i) FROM {db}.t
+----
+45
+
+# the result types match the types DuckDB itself would produce
+query IIII
+SELECT typeof(SUM(i)), typeof(COUNT(*)), typeof(AVG(i)), typeof(MIN(v)) FROM {db}.t
+----
+HUGEINT	BIGINT	DOUBLE	VARCHAR
+
+# group by + order by
+query II
+SELECT g, SUM(i) FROM {db}.t GROUP BY g ORDER BY g
+----
+0	18
+1	12
+2	15
+
+# filters, LIKE and LIMIT
+query I
+SELECT v FROM {db}.t WHERE v LIKE 'str_' AND i > 5 ORDER BY i DESC LIMIT 2 OFFSET 1
+----
+str8
+str7
+
+# DuckDB's LIKE is case sensitive, SQLite's is not
+query I
+SELECT count(*) FROM {db}.t WHERE v LIKE 'STR%'
+----
+0
+
+query I
+SELECT count(*) FROM {db}.t WHERE v NOT LIKE 'STR%'
+----
+10
+
+# DISTINCT
+query I
+SELECT DISTINCT g FROM {db}.t ORDER BY g
+----
+0
+1
+2
+
+# identifiers are case insensitive
+query II
+SELECT G, Sum(I) FROM {db}.T GROUP BY G ORDER BY G
+----
+0	18
+1	12
+2	15
+
+# subqueries and joins
+query I
+SELECT COUNT(*) FROM {db}.t t1 JOIN {db}.t t2 ON t1.i = t2.g
+----
+10
+
+query I
+SELECT SUM(x) FROM (SELECT i + 1 AS x FROM {db}.t WHERE i IN (SELECT g FROM {db}.t))
+----
+6
+
+# division is a floating point division
+query II
+SELECT i / 4, i // 4 FROM {db}.t ORDER BY i DESC LIMIT 2
+----
+2.25	2
+2.0	2
+
+endloop
+
+query II
+EXPLAIN SELECT g, SUM(i) FROM s.t GROUP BY g ORDER BY g
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*GROUP BY "g" ORDER BY "g" ASC NULLS LAST.*
+
+query II
+EXPLAIN SELECT v FROM s.t WHERE v LIKE 'str_' AND i > 5 ORDER BY i DESC LIMIT 2 OFFSET 1
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*"v" GLOB 'str\?'.*ORDER BY "i" DESC NULLS LAST LIMIT 2 OFFSET 1.*
+
+query II
+EXPLAIN SELECT COUNT(*) FROM s.t t1 JOIN s.t t2 ON t1.i = t2.g
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*INNER JOIN.*
+
+# unsupported functions are executed DuckDB side
+query I
+SELECT mode(i < 7) FROM s.t
+----
+true
+
+query II
+EXPLAIN SELECT mode(i < 7) FROM s.t
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+# plain scans of a single table use the regular (parallel) table scan
+query II
+EXPLAIN SELECT i, v FROM s.t WHERE i > 5 LIMIT 3
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+# mixing local and remote tables is not pushed down
+statement ok
+CREATE TABLE local_tbl AS SELECT 1 AS i
+
+query I
+SELECT COUNT(*) FROM s.t JOIN local_tbl USING (i)
+----
+1
+
+query II
+EXPLAIN SELECT COUNT(*) FROM s.t JOIN local_tbl USING (i)
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+# neither are queries over two different SQLite databases
+query I
+SELECT COUNT(*) FROM s.t JOIN l.t USING (i)
+----
+10
+
+query II
+EXPLAIN SELECT COUNT(*) FROM s.t JOIN l.t USING (i)
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+# the generated SQL can be inspected with sqlite_debug_show_queries, the queries are executed with sqlite_query
+query I
+SELECT * FROM sqlite_query('s', 'SELECT sum(i) FROM t', column_types := ['HUGEINT'])
+----
+45
