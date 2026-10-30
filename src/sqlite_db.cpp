@@ -249,7 +249,9 @@ bool SQLiteDB::TryPrepareStrict(const string &query, string &error) {
 SQLiteStatement SQLiteDB::Prepare(const string &query) {
 	SQLiteStatement stmt;
 	if (!TryPrepare(query, stmt)) {
-		string error = "Failed to prepare query \"" + query + "\": " + string(sqlite3_errmsg(db));
+		// the query is not part of the message - it can contain the values of query parameters (e.g. in pushed down
+		// filters), sqlite_debug_show_queries shows it
+		string error = "Failed to prepare query: " + string(sqlite3_errmsg(db));
 		throw std::runtime_error(error);
 	}
 	return stmt;
@@ -261,7 +263,7 @@ int64_t SQLiteDB::Execute(const string &query) {
 	}
 	auto rc = sqlite3_exec(db, query.c_str(), nullptr, nullptr, nullptr);
 	if (rc != SQLITE_OK) {
-		string error = "Failed to execute query \"" + query + "\": " + string(sqlite3_errmsg(db));
+		string error = "Failed to execute query: " + string(sqlite3_errmsg(db));
 		throw std::runtime_error(error);
 	}
 	return static_cast<int64_t>(sqlite3_changes64(db));

@@ -164,7 +164,7 @@ static unique_ptr<FunctionData> SQLiteQueryBind(ClientContext &context, TableFun
 	} else {
 		auto stmt = con.Prepare(sql);
 		if (!stmt.stmt) {
-			throw BinderException("Failed to prepare query \"%s\"", sql);
+			throw BinderException("Failed to prepare query: the query is empty");
 		}
 		if (!sqlite3_stmt_readonly(stmt.stmt)) {
 			modifies_database = true;

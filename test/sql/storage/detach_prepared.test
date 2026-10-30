@@ -110,7 +110,7 @@ CALL sqlite_query('s', 'DROP TABLE detach_prepare_test')
 statement error
 EXECUTE p2
 ----
-Invalid Error: Failed to prepare query "SELECT * FROM detach_prepare_test": no such table: detach_prepare_test
+Invalid Error: Failed to prepare query: no such table: detach_prepare_test
 
 statement ok
 DEALLOCATE p2
