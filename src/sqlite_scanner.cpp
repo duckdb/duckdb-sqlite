@@ -311,7 +311,19 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 		SQLiteCatalog &catalog = attached_catalog.Get<SQLiteCatalog>();
 		auto &transaction = SQLiteTransaction::Get(context, catalog);
 		auto &con = transaction.GetDB();
-		int64_t affected_rows = con.Execute(bind_data.sql);
+		int64_t affected_rows;
+		if (bind_data.params.empty()) {
+			affected_rows = con.Execute(bind_data.sql);
+		} else {
+			// the parameters are bound to a prepared statement
+			auto stmt = con.Prepare(bind_data.sql);
+			for (idx_t param_idx = 0; param_idx < bind_data.params.size(); param_idx++) {
+				stmt.BindParameter(bind_data.params[param_idx], param_idx);
+			}
+			while (stmt.Step()) {
+			}
+			affected_rows = static_cast<int64_t>(sqlite3_changes64(con.db));
+		}
 		int64_t *vec_data = FlatVector::GetDataMutable<int64_t>(output.data[0]);
 		vec_data[0] = affected_rows;
 		state.done = true;
