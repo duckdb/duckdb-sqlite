@@ -109,6 +109,8 @@ InsertionOrderPreservingMap<string> SQLiteUpdate::ParamsToString() const {
 //===--------------------------------------------------------------------===//
 // Plan
 //===--------------------------------------------------------------------===//
+PhysicalOperator &AddCastToSQLiteTypes(ClientContext &context, PhysicalPlanGenerator &planner, PhysicalOperator &plan);
+
 PhysicalOperator &SQLiteCatalog::PlanUpdate(ClientContext &context, PhysicalPlanGenerator &planner, LogicalUpdate &op,
                                             PhysicalOperator &plan) {
 	if (op.return_chunk) {
@@ -119,8 +121,10 @@ PhysicalOperator &SQLiteCatalog::PlanUpdate(ClientContext &context, PhysicalPlan
 			throw BinderException("SET DEFAULT is not yet supported for updates of a SQLite table");
 		}
 	}
+	// the values are bound as the types SQLite stores (e.g. dates as strings)
+	auto &inner_plan = AddCastToSQLiteTypes(context, planner, plan);
 	auto &update = planner.Make<SQLiteUpdate>(op, op.table, std::move(op.columns));
-	update.children.push_back(plan);
+	update.children.push_back(inner_plan);
 	return update;
 }
 
