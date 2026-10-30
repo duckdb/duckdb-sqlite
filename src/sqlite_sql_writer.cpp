@@ -253,7 +253,12 @@ optional_ptr<SQLiteTableEntry> SQLiteSQLWriter::LookupTable(const QualifiedName 
 	if (!entry || entry->type != CatalogType::TABLE_ENTRY) {
 		return nullptr;
 	}
-	return &entry->Cast<SQLiteTableEntry>();
+	auto &table = entry->Cast<SQLiteTableEntry>();
+	if (!table.has_pushdown_info) {
+		throw InternalException("SQLiteSQLWriter: the remote pushdown metadata of table \"%s\" was not loaded",
+		                        table.name.GetIdentifierName());
+	}
+	return &table;
 }
 
 bool SQLiteSQLWriter::IsCTEReference(const BaseTableRef &ref) {

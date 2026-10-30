@@ -205,12 +205,17 @@ optional_ptr<CatalogEntry> SQLiteTransaction::GetCatalogEntry(const string &entr
 		vector<bool> utf8_text_affinity;
 		GetDB().GetTableInfo(entry_name, info.columns, info.constraints, all_varchar, utf8_text_affinity);
 		D_ASSERT(!info.columns.empty());
-		auto binary_collation = GetDB().GetBinaryCollation(entry_name, info.columns);
 
 		auto table = make_uniq<SQLiteTableEntry>(sqlite_catalog, sqlite_catalog.GetMainSchema(), info, all_varchar,
-		                                         std::move(utf8_text_affinity), std::move(binary_collation));
-		table->indexed_columns = GetDB().GetIndexedColumns(entry_name);
-		table->real_affinity = GetDB().GetRealAffinity(entry_name, table->GetColumns());
+		                                         std::move(utf8_text_affinity));
+		if (sqlite_catalog.options.remote_pushdown) {
+			// only the SQL that remote pushdown generates depends on these - they are not read otherwise, as they
+			// take several statements per table
+			table->binary_collation = GetDB().GetBinaryCollation(entry_name, table->GetColumns());
+			table->indexed_columns = GetDB().GetIndexedColumns(entry_name);
+			table->real_affinity = GetDB().GetRealAffinity(entry_name, table->GetColumns());
+			table->has_pushdown_info = true;
+		}
 		result = std::move(table);
 		break;
 	}
