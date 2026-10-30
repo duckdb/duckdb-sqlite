@@ -422,8 +422,9 @@ void SQLiteDB::GetTableInfo(const string &table_name, ColumnList &columns, vecto
 	}
 }
 
-case_insensitive_set_t SQLiteDB::GetIndexedColumns(const string &table_name) {
+case_insensitive_set_t SQLiteDB::GetIndexedColumns(const string &table_name, bool &non_binary_unique_key) {
 	case_insensitive_set_t result;
+	non_binary_unique_key = false;
 	string rowid_name;
 	if (TryGetRowIdName(table_name, rowid_name)) {
 		result.insert(rowid_name);
@@ -442,16 +443,25 @@ case_insensitive_set_t SQLiteDB::GetIndexedColumns(const string &table_name) {
 	if (pk_columns.size() == 1 && StringUtil::CIEquals(pk_type, "INTEGER")) {
 		result.insert(pk_columns[0]);
 	}
-	vector<string> indexes;
+	vector<pair<string, bool>> indexes;
 	stmt = Prepare(StringUtil::Format("PRAGMA index_list(\"%s\")", SQLiteUtils::SanitizeIdentifier(table_name)));
 	while (stmt.Step()) {
-		indexes.push_back(stmt.GetValue<string>(1));
+		indexes.emplace_back(stmt.GetValue<string>(1), stmt.GetValue<int>(2) != 0);
 	}
 	for (auto &index : indexes) {
-		stmt = Prepare(StringUtil::Format("PRAGMA index_info(\"%s\")", SQLiteUtils::SanitizeIdentifier(index)));
+		// seqno, cid, name, desc, coll, key
+		stmt = Prepare(StringUtil::Format("PRAGMA index_xinfo(\"%s\")", SQLiteUtils::SanitizeIdentifier(index.first)));
 		while (stmt.Step()) {
+			if (stmt.GetValue<int>(5) == 0) {
+				// not a key column of the index (e.g. the row id)
+				continue;
+			}
 			if (stmt.GetValue<int>(0) == 0 && stmt.GetType(2) == SQLITE_TEXT) {
 				result.insert(stmt.GetValue<string>(2));
+			}
+			if (index.second && stmt.GetType(4) == SQLITE_TEXT &&
+			    !StringUtil::CIEquals(stmt.GetValue<string>(4), "BINARY")) {
+				non_binary_unique_key = true;
 			}
 		}
 	}

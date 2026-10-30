@@ -31,7 +31,7 @@ namespace duckdb {
 
 SQLiteCatalog::SQLiteCatalog(AttachedDatabase &db_p, const string &path, SQLiteOpenOptions options_p)
     : Catalog(db_p), path(path), options(std::move(options_p)), in_memory(path == ":memory:"), active_in_memory(false),
-      capabilities(options.access_mode == AccessMode::READ_ONLY) {
+      capabilities(options.access_mode == AccessMode::READ_ONLY, db_p.GetName()) {
 	if (InMemory()) {
 		in_memory_db = SQLiteDB::Open(path, options, true);
 	} else if (options.keep_database_open && !FileSystem::IsRemoteFile(path) &&

@@ -1298,6 +1298,20 @@ bool SQLiteCapabilities::SupportsPushdown(const QueryNode &node) {
 		if (!update.set_info || !update.table || update.table->type != TableReferenceType::BASE_TABLE) {
 			return false;
 		}
+		// SQLite evaluates the subqueries of an UPDATE for each row while it updates the rows - a subquery that reads
+		// the updated table can see the rows that were already updated (DuckDB's see the table before the update)
+		auto set_info = update.set_info->Copy();
+		identifier_set_t cte_names;
+		identifier_set_t table_names;
+		for (auto &expr : set_info->expressions) {
+			SQLiteCollectTableNames(*expr, cte_names, table_names, true);
+		}
+		if (set_info->condition) {
+			SQLiteCollectTableNames(*set_info->condition, cte_names, table_names, true);
+		}
+		if (table_names.count(update.table->Cast<BaseTableRef>().Table()) > 0) {
+			return false;
+		}
 		// SQLite does not support ORDER BY / LIMIT in UPDATE statements (by default)
 		return node.modifiers.empty();
 	}
@@ -1463,6 +1477,15 @@ bool SQLiteCapabilities::SupportsStatementQuery(QueryNode &node) {
 	return true;
 }
 
+//! SQLite databases only have a single schema - a statement naming another schema is executed locally, which raises
+//! the error (or does nothing, with IF EXISTS). A name with two parts can name the catalog instead of the schema.
+static bool SQLiteIsMainSchema(const QualifiedName &name, const Identifier &catalog_name) {
+	if (name.Schema().empty() || StringUtil::CIEquals(name.Schema().GetIdentifierName(), DEFAULT_SCHEMA)) {
+		return true;
+	}
+	return name.Catalog().empty() && name.Schema() == catalog_name;
+}
+
 bool SQLiteCapabilities::SupportsPushdown(const SQLStatement &statement) {
 	if (read_only) {
 		// the read-only check is performed by DuckDB when executing the statement locally
@@ -1471,7 +1494,7 @@ bool SQLiteCapabilities::SupportsPushdown(const SQLStatement &statement) {
 	switch (statement.type) {
 	case StatementType::CREATE_STATEMENT: {
 		auto &create_info = *statement.Cast<CreateStatement>().info;
-		if (create_info.temporary) {
+		if (create_info.temporary || !SQLiteIsMainSchema(create_info.GetQualifiedName(), catalog_name)) {
 			return false;
 		}
 		switch (create_info.type) {
@@ -1517,14 +1540,16 @@ bool SQLiteCapabilities::SupportsPushdown(const SQLStatement &statement) {
 		case CatalogType::VIEW_ENTRY:
 		case CatalogType::INDEX_ENTRY:
 			// SQLite has no DROP ... CASCADE
-			return !drop_info.cascade && drop_info.GetQualifiedName().Path().size() <= 2;
+			return !drop_info.cascade && drop_info.GetQualifiedName().Path().size() <= 2 &&
+			       SQLiteIsMainSchema(drop_info.GetQualifiedName(), catalog_name);
 		default:
 			return false;
 		}
 	}
 	case StatementType::ALTER_STATEMENT: {
 		auto &alter_info = *statement.Cast<AlterStatement>().info;
-		if (alter_info.type != AlterType::ALTER_TABLE) {
+		if (alter_info.type != AlterType::ALTER_TABLE ||
+		    !SQLiteIsMainSchema(alter_info.GetQualifiedName(), catalog_name)) {
 			return false;
 		}
 		auto &alter_table_info = alter_info.Cast<AlterTableInfo>();

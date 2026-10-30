@@ -32,6 +32,9 @@ public:
 	vector<bool> real_affinity;
 	//! The columns that rows can be looked up by - the row id, and the leading columns of indexes
 	case_insensitive_set_t indexed_columns;
+	//! Whether a unique index (or the primary key) compares a column with a collation other than BINARY - SQLite then
+	//! finds conflicts that DuckDB does not
+	bool non_binary_unique_key = false;
 
 public:
 	const ColumnList &GetColumns() const override;

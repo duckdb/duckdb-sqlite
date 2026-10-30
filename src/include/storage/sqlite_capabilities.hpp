@@ -25,7 +25,8 @@ namespace duckdb {
 //! semantics as in DuckDB. Checks that depend on the types of the expressions are performed by the writer.
 class SQLiteCapabilities {
 public:
-	explicit SQLiteCapabilities(bool read_only_p = false) : read_only(read_only_p) {
+	explicit SQLiteCapabilities(bool read_only_p = false, Identifier catalog_name_p = Identifier())
+	    : read_only(read_only_p), catalog_name(std::move(catalog_name_p)) {
 	}
 
 	bool Supports(RemoteCapability capability) const;
@@ -67,6 +68,8 @@ private:
 private:
 	//! Whether the database was attached read-only - DML and DDL are never pushed down then
 	bool read_only;
+	//! The name of the attached database - a statement can name an entry as <catalog>.<name>
+	Identifier catalog_name;
 };
 
 } // namespace duckdb

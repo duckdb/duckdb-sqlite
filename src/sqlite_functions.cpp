@@ -559,6 +559,37 @@ static void SQLiteShiftRightFunction(sqlite3_context *context, int argc, sqlite3
 	sqlite3_result_int64(context, shift >= 0 && shift < bits ? input >> shift : 0);
 }
 
+//! duckdb_check_type(value, type, column) - raises the error the table scan raises for a value whose storage class
+//! does not match the type of its column (BIGINT, DOUBLE or VARCHAR)
+static void SQLiteCheckTypeFunction(sqlite3_context *context, int argc, sqlite3_value **argv) {
+	SQLiteRunFunction(context, [&]() {
+		auto storage_type = sqlite3_value_type(argv[0]);
+		auto type = SQLiteTextArgument(argv[1]);
+		int expected_type;
+		bool matches;
+		if (type == "BIGINT") {
+			expected_type = SQLITE_INTEGER;
+			matches = storage_type == SQLITE_INTEGER;
+		} else if (type == "DOUBLE") {
+			expected_type = SQLITE_FLOAT;
+			matches = storage_type == SQLITE_FLOAT || storage_type == SQLITE_INTEGER;
+		} else {
+			expected_type = SQLITE_TEXT;
+			matches = storage_type == SQLITE_TEXT;
+		}
+		if (!matches && storage_type != SQLITE_NULL) {
+			auto text = sqlite3_value_text(argv[0]);
+			auto expected = type == "DOUBLE" ? string("expected float or integer")
+			                                 : "column was declared as " + SQLiteUtils::TypeToString(expected_type);
+			throw Exception(ExceptionType::MISMATCH_TYPE,
+			                "Invalid type in column \"" + SQLiteTextArgument(argv[2]) + "\": " + expected +
+			                    ", found \"" + string(text ? const_char_ptr_cast(text) : "") + "\" of type \"" +
+			                    SQLiteUtils::TypeToString(storage_type) + "\" instead.");
+		}
+		sqlite3_result_int(context, 1);
+	});
+}
+
 //! duckdb_divide(x, y) - a floating point division (e.g. by a signed zero)
 static void SQLiteDivideFunction(sqlite3_context *context, int argc, sqlite3_value **argv) {
 	if (SQLiteHasNull(argc, argv)) {
@@ -1731,6 +1762,7 @@ void SQLiteFunctions::Register(sqlite3 *db) {
 	    {"duckdb_pow", 2, SQLitePowFunction},
 	    {"duckdb_atan2", 2, SQLiteAtan2Function},
 	    {"duckdb_divide", 2, SQLiteDivideFunction},
+	    {"duckdb_check_type", 3, SQLiteCheckTypeFunction},
 	    {"duckdb_shift_left", 3, SQLiteShiftLeftFunction},
 	    {"duckdb_shift_right", 3, SQLiteShiftRightFunction},
 	    {"duckdb_log", 2, SQLiteLogBaseFunction},

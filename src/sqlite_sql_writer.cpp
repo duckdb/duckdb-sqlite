@@ -858,6 +858,7 @@ string SQLiteSQLWriter::WriteColumnRef(const ColumnRefExpression &column_ref) {
 		// the target of a DML statement cannot be read through a subquery - convert its columns where they are used
 		auto column = ResolveTargetColumn(column_ref);
 		if (column) {
+			dml_read_columns.insert(column->Name().GetIdentifierName());
 			auto read = SQLiteColumnRead(*dml_target, *column, result);
 			if (!read.empty()) {
 				if (column->Type().id() == LogicalTypeId::DATE || column->Type().id() == LogicalTypeId::TIMESTAMP) {
@@ -3843,6 +3844,7 @@ string SQLiteSQLWriter::WriteReturningList(const vector<unique_ptr<ParsedExpress
 			// the columns are converted the way the table scan converts them
 			idx_t col = 0;
 			for (auto &column : table.GetColumns().Logical()) {
+				dml_read_columns.insert(column.Name().GetIdentifierName());
 				auto column_name = WriteIdentifier(column.Name());
 				auto read = SQLiteColumnRead(table, column, column_name);
 				if (!read.empty() &&
@@ -3873,6 +3875,31 @@ static string SQLiteWriteTarget(SQLiteTableEntry &table, const Identifier &alias
 	return result;
 }
 
+string SQLiteSQLWriter::WriteDMLCondition(const string &condition) {
+	// the table scan raises an error for a value whose storage class does not match the type of its column (among
+	// the rows that match the filters it pushes down) - the columns the statement reads are checked like that, after
+	// the condition of the statement (which SQLite can still use to look up the rows)
+	string result;
+	for (auto &column : dml_target->GetColumns().Logical()) {
+		auto &name = column.Name().GetIdentifierName();
+		auto type_id = column.Type().id();
+		if (dml_target->all_varchar || dml_read_columns.count(name) == 0 ||
+		    (type_id != LogicalTypeId::BIGINT && type_id != LogicalTypeId::DOUBLE &&
+		     type_id != LogicalTypeId::VARCHAR)) {
+			continue;
+		}
+		RequireExtensionFunctions("checking the values of a column");
+		auto column_ref = WriteIdentifier(dml_bindings[0]) + "." + WriteIdentifier(column.Name());
+		result += (result.empty() ? "" : " AND ") + string("duckdb_check_type(") + column_ref + ", '" +
+		          column.Type().ToString() + "', " + WriteConstant(Value(name)) + ")";
+	}
+	if (condition.empty()) {
+		return result.empty() ? string() : " WHERE " + result;
+	}
+	// the condition is a single term - an OR is enclosed in parentheses
+	return " WHERE " + (result.empty() ? condition : condition + " AND " + result);
+}
+
 string SQLiteSQLWriter::WriteUpdateNode(const UpdateQueryNode &node) {
 	auto &table = GetTargetTable(*node.table);
 	string result = WriteCTEMap(node.cte_map);
@@ -3884,18 +3911,21 @@ string SQLiteSQLWriter::WriteUpdateNode(const UpdateQueryNode &node) {
 	dml_target = &table;
 	dml_bindings = {node.table->alias.empty() ? table.name : node.table->alias};
 	dml_scope = table_scopes.size();
+	dml_read_columns.clear();
 	result += "UPDATE " + SQLiteWriteTarget(table, node.table->alias);
 	result += " SET " + WriteSetClause(*node.set_info, table);
 	if (node.from_table) {
 		result += " FROM " + WriteTableRef(*node.from_table);
 	}
+	string condition;
 	if (node.set_info->condition) {
-		result += " WHERE " + WriteCondition(*node.set_info->condition);
+		condition = WriteCondition(*node.set_info->condition);
 	}
 	if (!node.returning_list.empty() && node.from_table) {
 		throw SQLitePushdownNotSupported("RETURNING in an UPDATE with a FROM clause");
 	}
-	result += WriteReturningList(node.returning_list, table);
+	auto returning = WriteReturningList(node.returning_list, table);
+	result += WriteDMLCondition(condition) + returning;
 	dml_target = nullptr;
 	table_scopes.pop_back();
 	return result;
@@ -3909,7 +3939,9 @@ string SQLiteSQLWriter::WriteDeleteNode(const DeleteQueryNode &node) {
 	dml_target = &table;
 	dml_bindings = {node.table->alias.empty() ? table.name : node.table->alias};
 	dml_scope = table_scopes.size();
+	dml_read_columns.clear();
 	result += "DELETE FROM " + SQLiteWriteTarget(table, node.table->alias);
+	string condition;
 	if (!node.using_clauses.empty()) {
 		// SQLite has no DELETE ... USING - a row is deleted if there is a row in the USING tables that it matches
 		if (!node.returning_list.empty()) {
@@ -3919,19 +3951,20 @@ string SQLiteSQLWriter::WriteDeleteNode(const DeleteQueryNode &node) {
 		for (auto &using_clause : node.using_clauses) {
 			table_scopes.back().push_back(using_clause);
 		}
-		result += " WHERE EXISTS (SELECT 1 FROM ";
+		condition = "EXISTS (SELECT 1 FROM ";
 		for (idx_t i = 0; i < node.using_clauses.size(); i++) {
-			result += (i > 0 ? ", " : "") + WriteTableRef(*node.using_clauses[i]);
+			condition += (i > 0 ? ", " : "") + WriteTableRef(*node.using_clauses[i]);
 		}
 		if (node.condition) {
-			result += " WHERE " + WriteCondition(*node.condition);
+			condition += " WHERE " + WriteCondition(*node.condition);
 		}
-		result += ")";
+		condition += ")";
 		table_scopes.pop_back();
 	} else if (node.condition) {
-		result += " WHERE " + WriteCondition(*node.condition);
+		condition = WriteCondition(*node.condition);
 	}
-	result += WriteReturningList(node.returning_list, table);
+	auto returning = WriteReturningList(node.returning_list, table);
+	result += WriteDMLCondition(condition) + returning;
 	dml_target = nullptr;
 	table_scopes.pop_back();
 	return result;
@@ -4066,6 +4099,10 @@ string SQLiteSQLWriter::WriteOnConflict(const OnConflictInfo &info, SQLiteTableE
                                         optional_ptr<const ExpressionListRef> values_list) {
 	if (info.action_type == OnConflictAction::THROW) {
 		return string();
+	}
+	if (table.non_binary_unique_key) {
+		// e.g. a NOCASE primary key - DuckDB compares the strings byte by byte
+		throw SQLitePushdownNotSupported("ON CONFLICT with a unique key with a collation");
 	}
 	// the conflict target - DuckDB defaults to the primary key
 	vector<string> conflict_columns;
@@ -4322,17 +4359,18 @@ void SQLiteSQLWriter::WriteCreateTable(CreateStatement &statement, SQLiteWriterR
 void SQLiteSQLWriter::WriteCreateView(CreateViewInfo &info, SQLiteWriterResult &result) {
 	auto view_name = WriteIdentifier(info.GetViewName());
 	string query_sql;
+	// the query is bound like a regular CREATE VIEW binds it - which raises the errors of an invalid query
+	vector<LogicalType> view_types;
+	{
+		auto probe = info.query->node->Copy();
+		identifier_set_t cte_names;
+		CollectCTENames(*probe, cte_names);
+		QualifyTables(*probe, catalog.GetName(), cte_names);
+		auto binder = Binder::CreateBinder(context);
+		view_types = binder->Bind(*probe).types;
+	}
 	try {
 		// the view is read back by DuckDB - it must bind its SQL to the same result types
-		vector<LogicalType> view_types;
-		{
-			auto probe = info.query->node->Copy();
-			identifier_set_t cte_names;
-			CollectCTENames(*probe, cte_names);
-			QualifyTables(*probe, catalog.GetName(), cte_names);
-			auto binder = Binder::CreateBinder(context);
-			view_types = binder->Bind(*probe).types;
-		}
 		CollectColumnReferences(*info.query->node);
 		query_sql = WriteQueryNode(*info.query->node);
 		Parser parser(context);

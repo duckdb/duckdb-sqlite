@@ -146,6 +146,9 @@ private:
 	string WriteFilteredSelectNode(const SelectNode &node);
 	string WriteSetOperationNode(const SetOperationNode &node);
 	string WriteSetOperationChild(const QueryNode &node);
+	//! The WHERE clause of an UPDATE / DELETE with the given condition, which checks the values of the columns the
+	//! statement reads
+	string WriteDMLCondition(const string &condition);
 	//! A copy of a SELECT whose references to aliases of its select list are replaced with the aliased expressions
 	//! (nullptr if it has none) - SQLite resolves aliases in fewer places than DuckDB
 	unique_ptr<QueryNode> ExpandSelectAliases(const SelectNode &node);
@@ -224,6 +227,8 @@ private:
 	//! statement - references to its columns are converted the way the table scan converts them
 	optional_ptr<SQLiteTableEntry> dml_target;
 	vector<Identifier> dml_bindings;
+	//! The columns of the target of the DML statement that the statement reads
+	case_insensitive_set_t dml_read_columns;
 	idx_t dml_scope = 0;
 	//! Whether column references are written without their table (in a RETURNING list)
 	bool unqualified_columns = false;

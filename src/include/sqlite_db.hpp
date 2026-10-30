@@ -53,8 +53,9 @@ public:
 	CatalogType GetEntryType(const string &name);
 	void GetTableInfo(const string &table_name, ColumnList &columns, vector<unique_ptr<Constraint>> &constraints,
 	                  bool all_varchar, vector<bool> &utf8_text_affinity);
-	//! The columns that the rows of a table can be looked up by - the row id, and the leading columns of indexes
-	case_insensitive_set_t GetIndexedColumns(const string &table_name);
+	//! The columns that the rows of a table can be looked up by - the row id, and the leading columns of indexes - and
+	//! whether a unique index (or primary key) compares a column with a collation other than BINARY
+	case_insensitive_set_t GetIndexedColumns(const string &table_name, bool &non_binary_unique_key);
 	//! Whether each column of a table compares strings with the BINARY collation
 	vector<bool> GetBinaryCollation(const string &table_name, const ColumnList &columns);
 	//! Whether each column has REAL affinity (stores no integers)
