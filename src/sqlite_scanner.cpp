@@ -23,26 +23,6 @@
 
 namespace duckdb {
 
-//! Interrupts a SQLite statement when the query is interrupted (or times out)
-static int SqliteProgressHandler(void *data) {
-	auto &context = *static_cast<ClientContext *>(data);
-	try {
-		context.InterruptCheck();
-	} catch (std::exception &) {
-		return 1;
-	}
-	return 0;
-}
-
-static void SqliteSetProgressHandler(SQLiteDB &db, optional_ptr<ClientContext> context) {
-	static constexpr int PROGRESS_HANDLER_INSTRUCTIONS = 10000;
-	if (context) {
-		sqlite3_progress_handler(db.db, PROGRESS_HANDLER_INSTRUCTIONS, SqliteProgressHandler, context.get());
-	} else {
-		sqlite3_progress_handler(db.db, 0, nullptr, nullptr);
-	}
-}
-
 struct SqliteLocalState : public LocalTableFunctionState {
 	SQLiteDB *db = nullptr;
 	SQLiteDB owned_db;
@@ -58,9 +38,6 @@ struct SqliteLocalState : public LocalTableFunctionState {
 	idx_t scan_count = 1;
 
 	~SqliteLocalState() {
-		if (db && db->IsOpen()) {
-			SqliteSetProgressHandler(*db, nullptr);
-		}
 	}
 };
 
@@ -277,7 +254,6 @@ SqliteInitLocalState(ExecutionContext &context, TableFunctionInitInput &input, G
 	if (!SqliteParallelStateNext(context.client, bind_data, *result, gstate)) {
 		result->done = true;
 	}
-	SqliteSetProgressHandler(*result->db, &context.client);
 	return std::move(result);
 }
 
@@ -394,16 +370,7 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 		SQLiteCatalog &catalog = attached_catalog.Get<SQLiteCatalog>();
 		auto &transaction = SQLiteTransaction::Get(context, catalog);
 		auto &con = transaction.GetDB();
-		SqliteSetProgressHandler(con, &context);
-		int64_t affected_rows;
-		try {
-			affected_rows = con.Execute(bind_data.sql);
-		} catch (std::exception &) {
-			SqliteSetProgressHandler(con, nullptr);
-			context.BlockingInterruptCheck();
-			throw;
-		}
-		SqliteSetProgressHandler(con, nullptr);
+		int64_t affected_rows = con.Execute(bind_data.sql);
 		if (bind_data.clear_catalog_cache) {
 			transaction.ClearCatalogCache();
 		}
@@ -434,14 +401,7 @@ static void SqliteScan(ClientContext &context, TableFunctionInput &data, DataChu
 				break;
 			}
 			auto &stmt = state.stmt;
-			bool has_more;
-			try {
-				has_more = stmt.Step();
-			} catch (std::exception &) {
-				// the statement is interrupted by the progress handler when the query is interrupted
-				context.BlockingInterruptCheck();
-				throw;
-			}
+			auto has_more = stmt.Step();
 			if (!has_more) {
 				state.done = true;
 				output.SetChildCardinality(out_idx);
