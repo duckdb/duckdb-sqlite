@@ -21,6 +21,7 @@ public:
 	optional_ptr<CatalogEntry> InsertEntry(const string &entry_name, unique_ptr<CatalogEntry> entry);
 	optional_ptr<CatalogEntry> GetEntry(const string &entry_name);
 	void EraseEntry(const string &entry_name);
+	void Clear();
 
 private:
 	mutex lock;
@@ -51,6 +52,11 @@ optional_ptr<CatalogEntry> SQLiteCatalogMap::GetEntry(const string &entry_name) 
 void SQLiteCatalogMap::EraseEntry(const string &entry_name) {
 	lock_guard<mutex> guard(lock);
 	catalog_entries.erase(entry_name);
+}
+
+void SQLiteCatalogMap::Clear() {
+	lock_guard<mutex> guard(lock);
+	catalog_entries.clear();
 }
 
 SQLiteTransaction::SQLiteTransaction(SQLiteCatalog &sqlite_catalog, TransactionManager &manager, ClientContext &context)
@@ -200,8 +206,18 @@ optional_ptr<CatalogEntry> SQLiteTransaction::GetCatalogEntry(const string &entr
 		GetDB().GetTableInfo(entry_name, info.columns, info.constraints, all_varchar, utf8_text_affinity);
 		D_ASSERT(!info.columns.empty());
 
-		result = make_uniq<SQLiteTableEntry>(sqlite_catalog, sqlite_catalog.GetMainSchema(), info, all_varchar,
-		                                     std::move(utf8_text_affinity));
+		auto table = make_uniq<SQLiteTableEntry>(sqlite_catalog, sqlite_catalog.GetMainSchema(), info, all_varchar,
+		                                         std::move(utf8_text_affinity));
+		if (sqlite_catalog.options.remote_pushdown) {
+			// only the SQL that remote pushdown generates depends on these - they are not read otherwise, as they
+			// take several statements per table
+			table->binary_collation = GetDB().GetBinaryCollation(entry_name, table->GetColumns());
+			table->indexed_columns =
+			    GetDB().GetIndexedColumns(entry_name, table->non_binary_unique_key, table->generated_columns);
+			table->real_affinity = GetDB().GetRealAffinity(entry_name, table->GetColumns());
+			table->has_pushdown_info = true;
+		}
+		result = std::move(table);
 		break;
 	}
 	case CatalogType::VIEW_ENTRY: {
@@ -248,6 +264,10 @@ optional_ptr<CatalogEntry> SQLiteTransaction::GetCatalogEntry(const string &entr
 
 void SQLiteTransaction::ClearTableEntry(const string &table_name) {
 	catalog_map->EraseEntry(table_name);
+}
+
+void SQLiteTransaction::ClearCatalogCache() {
+	catalog_map->Clear();
 }
 
 string GetDropSQL(CatalogType type, const string &table_name, bool cascade) {

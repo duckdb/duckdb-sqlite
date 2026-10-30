@@ -1,0 +1,421 @@
+# name: test/sql/remote_pushdown/remote_pushdown_functions_date.test
+# description: Test remote pushdown of date and time functions into SQLite
+# group: [remote_pushdown]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_functions_date.db' AS l (TYPE SQLITE)
+
+statement ok
+SET sqlite_enable_remote_pushdown = true
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_functions_date.db' AS s (TYPE SQLITE)
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE t(i INTEGER, dt DATE, ts TIMESTAMP, s TEXT)')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO t VALUES (1, ''2020-01-31'', ''2020-01-31 10:11:12.123456'', ''2020-01-31'')')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO t VALUES (2, ''2021-12-31'', ''2021-12-31 23:59:59'', ''2021-12-31 23:59:59'')')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO t VALUES (3, ''2000-02-29'', ''2000-02-29 00:00:00.5'', ''x'')')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO t VALUES (4, ''1999-01-03'', 1577836800, ''1999-01-03'')')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO t VALUES (5, NULL, NULL, NULL)')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO t VALUES (6, ''2024-06-30'', ''2024-06-30T12:00:00'', ''2024-06-30 12:00:00'')')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO t VALUES (7, 1600000000, 1600000000.25, '''')')
+
+# the results are the same with and without remote pushdown
+foreach db l s
+
+# dates and timestamps are read like the table scan reads them (ISO strings and unix timestamps)
+query III
+SELECT i, dt, ts FROM {db}.t ORDER BY i
+----
+1	2020-01-31	2020-01-31 10:11:12.123456
+2	2021-12-31	2021-12-31 23:59:59
+3	2000-02-29	2000-02-29 00:00:00.5
+4	1999-01-03	2020-01-01 00:00:00
+5	NULL	NULL
+6	2024-06-30	2024-06-30 12:00:00
+7	2020-09-13	2020-09-13 12:26:40.25
+
+query III
+SELECT i, typeof(dt), typeof(ts) FROM {db}.t ORDER BY i
+----
+1	DATE	TIMESTAMP
+2	DATE	TIMESTAMP
+3	DATE	TIMESTAMP
+4	DATE	TIMESTAMP
+5	DATE	TIMESTAMP
+6	DATE	TIMESTAMP
+7	DATE	TIMESTAMP
+
+# comparisons with constants
+query I
+SELECT i FROM {db}.t WHERE dt > DATE '2000-01-01' ORDER BY i
+----
+1
+2
+3
+6
+7
+
+query I
+SELECT i FROM {db}.t WHERE dt >= '2020-01-31' AND dt <= '2021-12-31' ORDER BY i
+----
+1
+2
+7
+
+query I
+SELECT i FROM {db}.t WHERE ts > TIMESTAMP '2020-01-01 00:00:00' ORDER BY i
+----
+1
+2
+6
+7
+
+query I
+SELECT i FROM {db}.t WHERE ts = TIMESTAMP '2000-02-29 00:00:00.5' ORDER BY i
+----
+3
+
+query I
+SELECT i FROM {db}.t WHERE dt BETWEEN DATE '1999-01-01' AND DATE '2020-12-31' ORDER BY i
+----
+1
+3
+4
+7
+
+query I
+SELECT i FROM {db}.t WHERE dt IN (DATE '2000-02-29', DATE '2024-06-30') ORDER BY i
+----
+3
+6
+
+# comparisons of dates with timestamps
+query III
+SELECT i, dt < ts, dt = ts::DATE FROM {db}.t ORDER BY i
+----
+1	true	true
+2	true	true
+3	true	true
+4	true	false
+5	NULL	NULL
+6	true	true
+7	true	true
+
+query I
+SELECT i FROM {db}.t WHERE ts > DATE '2020-01-31' ORDER BY i
+----
+1
+2
+6
+7
+
+# ordering
+query II
+SELECT i, ts FROM {db}.t ORDER BY ts DESC NULLS LAST, i
+----
+6	2024-06-30 12:00:00
+2	2021-12-31 23:59:59
+7	2020-09-13 12:26:40.25
+1	2020-01-31 10:11:12.123456
+4	2020-01-01 00:00:00
+3	2000-02-29 00:00:00.5
+5	NULL
+
+query IIII
+SELECT min(dt), max(dt), min(ts), max(ts) FROM {db}.t
+----
+1999-01-03	2024-06-30	2000-02-29 00:00:00.5	2024-06-30 12:00:00
+
+# casts
+query IIIII
+SELECT i, dt::TIMESTAMP, ts::DATE, dt::VARCHAR, ts::VARCHAR FROM {db}.t ORDER BY i
+----
+1	2020-01-31 00:00:00	2020-01-31	2020-01-31	2020-01-31 10:11:12.123456
+2	2021-12-31 00:00:00	2021-12-31	2021-12-31	2021-12-31 23:59:59
+3	2000-02-29 00:00:00	2000-02-29	2000-02-29	2000-02-29 00:00:00.5
+4	1999-01-03 00:00:00	2020-01-01	1999-01-03	2020-01-01 00:00:00
+5	NULL	NULL	NULL	NULL
+6	2024-06-30 00:00:00	2024-06-30	2024-06-30	2024-06-30 12:00:00
+7	2020-09-13 00:00:00	2020-09-13	2020-09-13	2020-09-13 12:26:40.25
+
+query III
+SELECT i, TRY_CAST(s AS DATE), TRY_CAST(s AS TIMESTAMP) FROM {db}.t ORDER BY i
+----
+1	2020-01-31	2020-01-31 00:00:00
+2	2021-12-31	2021-12-31 23:59:59
+3	NULL	NULL
+4	1999-01-03	1999-01-03 00:00:00
+5	NULL	NULL
+6	2024-06-30	2024-06-30 12:00:00
+7	NULL	NULL
+
+# date arithmetic
+query IIIII
+SELECT i, dt + 1, dt - 30, 7 + dt, dt - DATE '2000-01-01' FROM {db}.t ORDER BY i
+----
+1	2020-02-01	2020-01-01	2020-02-07	7335
+2	2022-01-01	2021-12-01	2022-01-07	8035
+3	2000-03-01	2000-01-30	2000-03-07	59
+4	1999-01-04	1998-12-04	1999-01-10	-363
+5	NULL	NULL	NULL	NULL
+6	2024-07-01	2024-05-31	2024-07-07	8947
+7	2020-09-14	2020-08-14	2020-09-20	7561
+
+query IIIIII
+SELECT i, dt + INTERVAL 1 MONTH, dt - INTERVAL 1 YEAR, ts + INTERVAL '1 day 2 hours', ts - INTERVAL 90 MINUTE, INTERVAL 2 WEEK + ts FROM {db}.t ORDER BY i
+----
+1	2020-02-29 00:00:00	2019-01-31 00:00:00	2020-02-01 12:11:12.123456	2020-01-31 08:41:12.123456	2020-02-14 10:11:12.123456
+2	2022-01-31 00:00:00	2020-12-31 00:00:00	2022-01-02 01:59:59	2021-12-31 22:29:59	2022-01-14 23:59:59
+3	2000-03-29 00:00:00	1999-02-28 00:00:00	2000-03-01 02:00:00.5	2000-02-28 22:30:00.5	2000-03-14 00:00:00.5
+4	1999-02-03 00:00:00	1998-01-03 00:00:00	2020-01-02 02:00:00	2019-12-31 22:30:00	2020-01-15 00:00:00
+5	NULL	NULL	NULL	NULL	NULL
+6	2024-07-30 00:00:00	2023-06-30 00:00:00	2024-07-01 14:00:00	2024-06-30 10:30:00	2024-07-14 12:00:00
+7	2020-10-13 00:00:00	2019-09-13 00:00:00	2020-09-14 14:26:40.25	2020-09-13 10:56:40.25	2020-09-27 12:26:40.25
+
+query I
+SELECT i FROM {db}.t WHERE ts > dt + INTERVAL 10 HOUR ORDER BY i
+----
+1
+2
+4
+6
+7
+
+# date parts
+query IIIIIIIIII
+SELECT i, year(dt), month(dt), day(dt), dayofmonth(ts), hour(ts), minute(ts), second(ts), millisecond(ts), microsecond(ts) FROM {db}.t ORDER BY i
+----
+1	2020	1	31	31	10	11	12	12123	12123456
+2	2021	12	31	31	23	59	59	59000	59000000
+3	2000	2	29	29	0	0	0	500	500000
+4	1999	1	3	1	0	0	0	0	0
+5	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL
+6	2024	6	30	30	12	0	0	0	0
+7	2020	9	13	13	12	26	40	40250	40250000
+
+query IIIIIIIII
+SELECT i, quarter(dt), dayofweek(dt), isodow(dt), dayofyear(dt), week(dt), weekofyear(ts), isoyear(dt), yearweek(dt) FROM {db}.t ORDER BY i
+----
+1	1	5	5	31	5	5	2020	202005
+2	4	5	5	365	52	52	2021	202152
+3	1	2	2	60	9	9	2000	200009
+4	1	0	7	3	53	1	1998	199853
+5	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL
+6	2	0	7	182	26	26	2024	202426
+7	3	0	7	257	37	37	2020	202037
+
+query IIIIII
+SELECT i, decade(dt), century(dt), millennium(dt), era(dt), hour(dt) FROM {db}.t ORDER BY i
+----
+1	202	21	3	1	0
+2	202	21	3	1	0
+3	200	20	2	1	0
+4	199	20	2	1	0
+5	NULL	NULL	NULL	NULL	NULL
+6	202	21	3	1	0
+7	202	21	3	1	0
+
+query IIIIII
+SELECT i, epoch(ts), epoch_ms(ts), epoch_us(ts), epoch(dt), julian(dt) FROM {db}.t ORDER BY i
+----
+1	1580465472.123456	1580465472123	1580465472123456	1580428800.0	2458880.0
+2	1640995199.0	1640995199000	1640995199000000	1640908800.0	2459580.0
+3	951782400.5	951782400500	951782400500000	951782400.0	2451604.0
+4	1577836800.0	1577836800000	1577836800000000	915321600.0	2451182.0
+5	NULL	NULL	NULL	NULL	NULL
+6	1719748800.0	1719748800000	1719748800000000	1719705600.0	2460492.0
+7	1600000000.25	1600000000250	1600000000250000	1599955200.0	2459106.0
+
+query III
+SELECT i, dayname(dt), monthname(ts) FROM {db}.t ORDER BY i
+----
+1	Friday	January
+2	Friday	December
+3	Tuesday	February
+4	Sunday	January
+5	NULL	NULL
+6	Sunday	June
+7	Sunday	September
+
+query IIIIII
+SELECT i, date_part('year', ts), date_part('dow', dt), date_part('doy', ts), datepart('quarter', dt), date_part('epoch', ts) FROM {db}.t ORDER BY i
+----
+1	2020	5	31	1	1580465472.123456
+2	2021	5	365	4	1640995199.0
+3	2000	2	60	1	951782400.5
+4	2020	0	1	1	1577836800.0
+5	NULL	NULL	NULL	NULL	NULL
+6	2024	0	182	2	1719748800.0
+7	2020	0	257	3	1600000000.25
+
+query IIIII
+SELECT i, extract(year FROM dt), extract(month FROM ts), extract(second FROM ts), extract('isodow' FROM dt) FROM {db}.t ORDER BY i
+----
+1	2020	1	12	5
+2	2021	12	59	5
+3	2000	2	0	2
+4	1999	1	0	7
+5	NULL	NULL	NULL	NULL
+6	2024	6	0	7
+7	2020	9	40	7
+
+# date_trunc
+query IIIII
+SELECT i, date_trunc('month', dt), date_trunc('year', ts), date_trunc('week', dt), date_trunc('quarter', ts) FROM {db}.t ORDER BY i
+----
+1	2020-01-01 00:00:00	2020-01-01 00:00:00	2020-01-27 00:00:00	2020-01-01 00:00:00
+2	2021-12-01 00:00:00	2021-01-01 00:00:00	2021-12-27 00:00:00	2021-10-01 00:00:00
+3	2000-02-01 00:00:00	2000-01-01 00:00:00	2000-02-28 00:00:00	2000-01-01 00:00:00
+4	1999-01-01 00:00:00	2020-01-01 00:00:00	1998-12-28 00:00:00	2020-01-01 00:00:00
+5	NULL	NULL	NULL	NULL
+6	2024-06-01 00:00:00	2024-01-01 00:00:00	2024-06-24 00:00:00	2024-04-01 00:00:00
+7	2020-09-01 00:00:00	2020-01-01 00:00:00	2020-09-07 00:00:00	2020-07-01 00:00:00
+
+query IIIIII
+SELECT i, date_trunc('hour', ts), date_trunc('minute', ts), date_trunc('second', ts), date_trunc('millisecond', ts), date_trunc('day', ts) FROM {db}.t ORDER BY i
+----
+1	2020-01-31 10:00:00	2020-01-31 10:11:00	2020-01-31 10:11:12	2020-01-31 10:11:12.123	2020-01-31 00:00:00
+2	2021-12-31 23:00:00	2021-12-31 23:59:00	2021-12-31 23:59:59	2021-12-31 23:59:59	2021-12-31 00:00:00
+3	2000-02-29 00:00:00	2000-02-29 00:00:00	2000-02-29 00:00:00	2000-02-29 00:00:00.5	2000-02-29 00:00:00
+4	2020-01-01 00:00:00	2020-01-01 00:00:00	2020-01-01 00:00:00	2020-01-01 00:00:00	2020-01-01 00:00:00
+5	NULL	NULL	NULL	NULL	NULL
+6	2024-06-30 12:00:00	2024-06-30 12:00:00	2024-06-30 12:00:00	2024-06-30 12:00:00	2024-06-30 00:00:00
+7	2020-09-13 12:00:00	2020-09-13 12:26:00	2020-09-13 12:26:40	2020-09-13 12:26:40.25	2020-09-13 00:00:00
+
+query IIIII
+SELECT i, date_trunc('decade', dt), date_trunc('century', dt), date_trunc('millennium', dt), date_trunc('isoyear', dt) FROM {db}.t ORDER BY i
+----
+1	2020-01-01 00:00:00	2000-01-01 00:00:00	2000-01-01 00:00:00	2019-12-30 00:00:00
+2	2020-01-01 00:00:00	2000-01-01 00:00:00	2000-01-01 00:00:00	2021-01-04 00:00:00
+3	2000-01-01 00:00:00	2000-01-01 00:00:00	2000-01-01 00:00:00	2000-01-03 00:00:00
+4	1990-01-01 00:00:00	1900-01-01 00:00:00	1000-01-01 00:00:00	1997-12-29 00:00:00
+5	NULL	NULL	NULL	NULL
+6	2020-01-01 00:00:00	2000-01-01 00:00:00	2000-01-01 00:00:00	2024-01-01 00:00:00
+7	2020-01-01 00:00:00	2000-01-01 00:00:00	2000-01-01 00:00:00	2019-12-30 00:00:00
+
+query II
+SELECT date_trunc('month', dt) AS m, count(*) FROM {db}.t GROUP BY m ORDER BY m
+----
+1999-01-01 00:00:00	1
+2000-02-01 00:00:00	1
+2020-01-01 00:00:00	1
+2020-09-01 00:00:00	1
+2021-12-01 00:00:00	1
+2024-06-01 00:00:00	1
+NULL	1
+
+# date_diff
+query IIIII
+SELECT i, date_diff('day', dt, DATE '2025-01-01'), date_diff('month', dt, DATE '2025-01-01'), date_diff('year', dt, DATE '2025-01-01'), date_diff('week', dt, DATE '2025-01-01') FROM {db}.t ORDER BY i
+----
+1	1797	60	5	256
+2	1097	37	4	156
+3	9073	299	25	1296
+4	9495	312	26	1356
+5	NULL	NULL	NULL	NULL
+6	185	7	1	26
+7	1571	52	5	224
+
+query IIIII
+SELECT i, date_diff('hour', ts, TIMESTAMP '2025-01-01'), date_diff('minute', ts, TIMESTAMP '2025-01-01'), datediff('second', ts, TIMESTAMP '2025-01-01'), date_diff('millisecond', dt, ts) FROM {db}.t ORDER BY i
+----
+1	43118	2587069	155224128	36672123
+2	26305	1578241	94694401	86399000
+3	217752	13065120	783907200	500
+4	43848	2630880	157852800	662515200000
+5	NULL	NULL	NULL	NULL
+6	4428	265680	15940800	43200000
+7	37692	2261494	135689600	44800250
+
+query IIII
+SELECT i, date_diff('quarter', dt, ts), date_diff('decade', dt, DATE '2100-01-01'), date_diff('isoyear', dt, DATE '2025-01-01') FROM {db}.t ORDER BY i
+----
+1	0	8	5
+2	0	8	4
+3	0	10	25
+4	84	11	27
+5	NULL	NULL	NULL
+6	0	8	1
+7	0	8	5
+
+# other functions
+query III
+SELECT i, last_day(dt), last_day(ts) FROM {db}.t ORDER BY i
+----
+1	2020-01-31	2020-01-31
+2	2021-12-31	2021-12-31
+3	2000-02-29	2000-02-29
+4	1999-01-31	2020-01-31
+5	NULL	NULL
+6	2024-06-30	2024-06-30
+7	2020-09-30	2020-09-30
+
+query II
+SELECT i, make_date(2020, i, 1) FROM {db}.t ORDER BY i
+----
+1	2020-01-01
+2	2020-02-01
+3	2020-03-01
+4	2020-04-01
+5	2020-05-01
+6	2020-06-01
+7	2020-07-01
+
+query III
+SELECT i, strftime(dt, '%Y/%m/%d %A %B'), strftime(ts, '%H:%M:%S.%f %j %W %b %a %p %I') FROM {db}.t ORDER BY i
+----
+1	2020/01/31 Friday January	10:11:12.123456 031 04 Jan Fri AM 10
+2	2021/12/31 Friday December	23:59:59.000000 365 52 Dec Fri PM 11
+3	2000/02/29 Tuesday February	00:00:00.500000 060 09 Feb Tue AM 12
+4	1999/01/03 Sunday January	00:00:00.000000 001 00 Jan Wed AM 12
+5	NULL	NULL
+6	2024/06/30 Sunday June	12:00:00.000000 182 26 Jun Sun PM 12
+7	2020/09/13 Sunday September	12:26:40.250000 257 36 Sep Sun PM 12
+
+endloop
+
+# the date and timestamp columns are converted the way the table scan converts them
+query II
+EXPLAIN SELECT i FROM s.t WHERE dt > DATE '2000-01-01' ORDER BY i
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*duckdb_date\("dt"\) AS "dt", "ts" AS "ts".*WHERE \("dt" > '2000-01-01'\).*
+
+# columns that are not used by the query are not converted
+query II
+EXPLAIN SELECT i FROM s.t WHERE i > 1 ORDER BY i
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*SELECT "i" FROM "t" WHERE \("i" > 1\).*
+
+query II
+EXPLAIN SELECT year(dt), date_trunc('month', ts), date_diff('day', dt, ts), dt + 1, ts + INTERVAL 1 DAY FROM s.t
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*duckdb_date_part\('year', "dt"\).*duckdb_date_trunc\('month', "ts"\).*duckdb_date_diff\('day', "dt", "ts"\).*date\("dt", 1 \|\| ' days'\).*duckdb_add_interval\("ts", 0, 1, 0\).*
+
+# dates beyond the year 9999 cannot be represented in SQLite
+query I
+SELECT dt + INTERVAL 9000 YEAR FROM l.t WHERE i = 1
+----
+11020-01-31 00:00:00
+
+statement error
+SELECT dt + INTERVAL 9000 YEAR FROM s.t WHERE i = 1
+----
+cannot be represented in SQLite

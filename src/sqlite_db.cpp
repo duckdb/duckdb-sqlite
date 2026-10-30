@@ -12,6 +12,7 @@
 #include "sqlite_db.hpp"
 #include "sqlite_stmt.hpp"
 #include "sqlite_duckdb_vfs_cache.hpp"
+#include "sqlite_functions.hpp"
 #include "sqlite_utils.hpp"
 
 namespace duckdb {
@@ -132,6 +133,10 @@ SQLiteDB SQLiteDB::OpenLocal(const string &path, const SQLiteOpenOptions &option
 	if (rc != SQLITE_OK) {
 		throw std::runtime_error("Unable to open database \"" + path + "\": " + string(sqlite3_errstr(rc)));
 	}
+	if (options.remote_pushdown) {
+		// the functions are only used by the queries that remote pushdown generates
+		SQLiteFunctions::Register(result.db);
+	}
 
 	ApplyBusyTimeout(result.db, options);
 
@@ -164,6 +169,10 @@ SQLiteDB SQLiteDB::OpenWithVFS(const string &path, const SQLiteOpenOptions &opti
 	auto rc = sqlite3_open_v2(path.c_str(), &result.db, flags, vfs_name.c_str());
 	if (rc != SQLITE_OK) {
 		HandleOpenError(path, rc, &context);
+	}
+	if (options.remote_pushdown) {
+		// the functions are only used by the queries that remote pushdown generates
+		SQLiteFunctions::Register(result.db);
 	}
 
 	ApplyBusyTimeout(result.db, options);
@@ -219,10 +228,30 @@ bool SQLiteDB::TryPrepare(const string &query, SQLiteStatement &stmt) {
 	return true;
 }
 
+bool SQLiteDB::TryPrepareStrict(const string &query, string &error) {
+	int dqs_dml = 0;
+	int dqs_ddl = 0;
+	sqlite3_db_config(db, SQLITE_DBCONFIG_DQS_DML, -1, &dqs_dml);
+	sqlite3_db_config(db, SQLITE_DBCONFIG_DQS_DDL, -1, &dqs_ddl);
+	sqlite3_db_config(db, SQLITE_DBCONFIG_DQS_DML, 0, nullptr);
+	sqlite3_db_config(db, SQLITE_DBCONFIG_DQS_DDL, 0, nullptr);
+	SQLiteStatement stmt;
+	bool success = TryPrepare(query, stmt);
+	if (!success) {
+		error = sqlite3_errmsg(db);
+	}
+	stmt.Close();
+	sqlite3_db_config(db, SQLITE_DBCONFIG_DQS_DML, dqs_dml, nullptr);
+	sqlite3_db_config(db, SQLITE_DBCONFIG_DQS_DDL, dqs_ddl, nullptr);
+	return success;
+}
+
 SQLiteStatement SQLiteDB::Prepare(const string &query) {
 	SQLiteStatement stmt;
 	if (!TryPrepare(query, stmt)) {
-		string error = "Failed to prepare query \"" + query + "\": " + string(sqlite3_errmsg(db));
+		// the query is not part of the message - it can contain the values of query parameters (e.g. in pushed down
+		// filters), sqlite_debug_show_queries shows it
+		string error = "Failed to prepare query: " + string(sqlite3_errmsg(db));
 		throw std::runtime_error(error);
 	}
 	return stmt;
@@ -234,7 +263,7 @@ int64_t SQLiteDB::Execute(const string &query) {
 	}
 	auto rc = sqlite3_exec(db, query.c_str(), nullptr, nullptr, nullptr);
 	if (rc != SQLITE_OK) {
-		string error = "Failed to execute query \"" + query + "\": " + string(sqlite3_errmsg(db));
+		string error = "Failed to execute query: " + string(sqlite3_errmsg(db));
 		throw std::runtime_error(error);
 	}
 	return static_cast<int64_t>(sqlite3_changes64(db));
@@ -395,6 +424,93 @@ void SQLiteDB::GetTableInfo(const string &table_name, ColumnList &columns, vecto
 	}
 }
 
+case_insensitive_set_t SQLiteDB::GetIndexedColumns(const string &table_name, bool &non_binary_unique_key,
+                                                   bool &generated_columns) {
+	case_insensitive_set_t result;
+	non_binary_unique_key = false;
+	generated_columns = false;
+	string rowid_name;
+	if (TryGetRowIdName(table_name, rowid_name)) {
+		result.insert(rowid_name);
+	}
+	// an INTEGER PRIMARY KEY is an alias of the row id
+	vector<string> pk_columns;
+	string pk_type;
+	SQLiteStatement stmt;
+	// cid, name, type, notnull, dflt_value, pk, hidden (2 and 3 are generated columns)
+	stmt = Prepare(StringUtil::Format("PRAGMA table_xinfo(\"%s\")", SQLiteUtils::SanitizeIdentifier(table_name)));
+	while (stmt.Step()) {
+		auto hidden = stmt.GetValue<int>(6);
+		if (hidden == 2 || hidden == 3) {
+			generated_columns = true;
+		}
+		if (stmt.GetValue<int>(5) > 0) {
+			pk_columns.push_back(stmt.GetValue<string>(1));
+			pk_type = stmt.GetValue<string>(2);
+		}
+	}
+	if (pk_columns.size() == 1 && StringUtil::CIEquals(pk_type, "INTEGER")) {
+		result.insert(pk_columns[0]);
+	}
+	vector<pair<string, bool>> indexes;
+	stmt = Prepare(StringUtil::Format("PRAGMA index_list(\"%s\")", SQLiteUtils::SanitizeIdentifier(table_name)));
+	while (stmt.Step()) {
+		indexes.emplace_back(stmt.GetValue<string>(1), stmt.GetValue<int>(2) != 0);
+	}
+	for (auto &index : indexes) {
+		// seqno, cid, name, desc, coll, key
+		stmt = Prepare(StringUtil::Format("PRAGMA index_xinfo(\"%s\")", SQLiteUtils::SanitizeIdentifier(index.first)));
+		while (stmt.Step()) {
+			if (stmt.GetValue<int>(5) == 0) {
+				// not a key column of the index (e.g. the row id)
+				continue;
+			}
+			if (stmt.GetValue<int>(0) == 0 && stmt.GetType(2) == SQLITE_TEXT) {
+				result.insert(stmt.GetValue<string>(2));
+			}
+			if (index.second && stmt.GetType(4) == SQLITE_TEXT &&
+			    !StringUtil::CIEquals(stmt.GetValue<string>(4), "BINARY")) {
+				non_binary_unique_key = true;
+			}
+		}
+	}
+	return result;
+}
+
+vector<bool> SQLiteDB::GetBinaryCollation(const string &table_name, const ColumnList &columns) {
+	vector<bool> result;
+	for (auto &column : columns.Logical()) {
+		const char *collation = nullptr;
+		auto rc =
+		    sqlite3_table_column_metadata(db, "main", table_name.c_str(), column.Name().GetIdentifierName().c_str(),
+		                                  nullptr, &collation, nullptr, nullptr, nullptr);
+		result.push_back(rc == SQLITE_OK && collation && StringUtil::CIEquals(collation, "BINARY"));
+	}
+	return result;
+}
+
+vector<bool> SQLiteDB::GetRealAffinity(const string &table_name, const ColumnList &columns) {
+	vector<bool> result;
+	for (auto &column : columns.Logical()) {
+		const char *declared_type = nullptr;
+		auto rc =
+		    sqlite3_table_column_metadata(db, "main", table_name.c_str(), column.Name().GetIdentifierName().c_str(),
+		                                  &declared_type, nullptr, nullptr, nullptr, nullptr);
+		bool real_affinity = false;
+		if (rc == SQLITE_OK && declared_type) {
+			// https://www.sqlite.org/datatype3.html#determination_of_column_affinity
+			auto type = StringUtil::Lower(declared_type);
+			real_affinity = !StringUtil::Contains(type, "int") && !StringUtil::Contains(type, "char") &&
+			                !StringUtil::Contains(type, "clob") && !StringUtil::Contains(type, "text") &&
+			                !StringUtil::Contains(type, "blob") &&
+			                (StringUtil::Contains(type, "real") || StringUtil::Contains(type, "floa") ||
+			                 StringUtil::Contains(type, "doub"));
+		}
+		result.push_back(real_affinity);
+	}
+	return result;
+}
+
 bool SQLiteDB::ColumnExists(const string &table_name, const string &column_name) {
 	SQLiteStatement stmt;
 
@@ -529,6 +645,10 @@ idx_t SQLiteDB::RunPragma(string pragma_name) {
 
 void SQLiteDB::DebugSetPrintQueries(bool print) {
 	debug_sqlite_print_queries = print;
+}
+
+bool SQLiteDB::DebugPrintQueries() {
+	return debug_sqlite_print_queries;
 }
 
 } // namespace duckdb

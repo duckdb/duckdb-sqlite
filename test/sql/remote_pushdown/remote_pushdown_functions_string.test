@@ -1,0 +1,507 @@
+# name: test/sql/remote_pushdown/remote_pushdown_functions_string.test
+# description: Test remote pushdown of string functions into SQLite
+# group: [remote_pushdown]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_functions_string.db' AS l (TYPE SQLITE)
+
+statement ok
+SET sqlite_enable_remote_pushdown = true
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_functions_string.db' AS s (TYPE SQLITE)
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE t(i INTEGER, s TEXT, nc TEXT COLLATE NOCASE, p TEXT)')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO t VALUES (1, ''Hello World'', ''Hello'', ''H%'')')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO t VALUES (2, ''straße ÄÉ'', ''hello'', ''%e'')')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO t VALUES (3, ''a_b%c*d?e[f]'', ''HELLO'', ''a\_%'')')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO t VALUES (4, '''', ''b'', '''')')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO t VALUES (5, NULL, NULL, NULL)')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO t VALUES (6, ''it''''s "quoted"'', ''Ab'', ''_t%'')')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO t VALUES (7, ''  padded  '', ''aB'', ''%'')')
+
+# the results are the same with and without remote pushdown
+foreach db l s
+
+# concatenation
+query IIIII
+SELECT i, s || '!', i || s, concat(s, i, '-'), concat_ws(', ', s, i, NULL, 'x') FROM {db}.t ORDER BY i
+----
+1	Hello World!	1Hello World	Hello World1-	Hello World, 1, x
+2	straße ÄÉ!	2straße ÄÉ	straße ÄÉ2-	straße ÄÉ, 2, x
+3	a_b%c*d?e[f]!	3a_b%c*d?e[f]	a_b%c*d?e[f]3-	a_b%c*d?e[f], 3, x
+4	!	4	4-	, 4, x
+5	NULL	NULL	5-	5, x
+6	it's "quoted"!	6it's "quoted"	it's "quoted"6-	it's "quoted", 6, x
+7	  padded  !	7  padded  	  padded  7-	  padded  , 7, x
+
+query IIII
+SELECT i, concat(NULL, NULL), concat_ws(NULL, s), s || NULL FROM {db}.t WHERE i = 1
+----
+1	(empty)	NULL	NULL
+
+query III
+SELECT i, (i > 2) || '', concat(i > 2) FROM {db}.t ORDER BY i
+----
+1	false	false
+2	false	false
+3	true	true
+4	true	true
+5	true	true
+6	true	true
+7	true	true
+
+# length
+query IIIIII
+SELECT i, length(s), len(s), char_length(s), strlen(s), octet_length(encode(s)) FROM {db}.t ORDER BY i
+----
+1	11	11	11	11	11
+2	9	9	9	12	12
+3	12	12	12	12	12
+4	0	0	0	0	0
+5	NULL	NULL	NULL	NULL	NULL
+6	13	13	13	13	13
+7	10	10	10	10	10
+
+# case conversion is Unicode aware
+query IIIII
+SELECT i, lower(s), upper(s), lcase(nc), ucase(nc) FROM {db}.t ORDER BY i
+----
+1	hello world	HELLO WORLD	hello	HELLO
+2	straße äé	STRAẞE ÄÉ	hello	HELLO
+3	a_b%c*d?e[f]	A_B%C*D?E[F]	hello	HELLO
+4	(empty)	(empty)	b	B
+5	NULL	NULL	NULL	NULL
+6	it's "quoted"	IT'S "QUOTED"	ab	AB
+7	  padded  	  PADDED  	ab	AB
+
+# trimming / replacing
+query IIIIIII
+SELECT i, trim(s), ltrim(s), rtrim(s), trim(s, ' d'), ltrim(s, 'Ha '), rtrim(s, 'd ') FROM {db}.t ORDER BY i
+----
+1	Hello World	Hello World	Hello World	Hello Worl	ello World	Hello Worl
+2	straße ÄÉ	straße ÄÉ	straße ÄÉ	straße ÄÉ	straße ÄÉ	straße ÄÉ
+3	a_b%c*d?e[f]	a_b%c*d?e[f]	a_b%c*d?e[f]	a_b%c*d?e[f]	_b%c*d?e[f]	a_b%c*d?e[f]
+4	(empty)	(empty)	(empty)	(empty)	(empty)	(empty)
+5	NULL	NULL	NULL	NULL	NULL	NULL
+6	it's "quoted"	it's "quoted"	it's "quoted"	it's "quoted"	it's "quoted"	it's "quoted"
+7	padded	padded  	  padded	padde	padded  	  padde
+
+query IIII
+SELECT i, replace(s, 'l', 'L'), replace(s, '', 'x'), replace(s, 'ß', 'ss') FROM {db}.t ORDER BY i
+----
+1	HeLLo WorLd	Hello World	Hello World
+2	straße ÄÉ	straße ÄÉ	strasse ÄÉ
+3	a_b%c*d?e[f]	a_b%c*d?e[f]	a_b%c*d?e[f]
+4	(empty)	(empty)	(empty)
+5	NULL	NULL	NULL
+6	it's "quoted"	it's "quoted"	it's "quoted"
+7	  padded  	  padded  	  padded  
+
+# substrings
+query IIIIIII
+SELECT i, substring(s, 2, 3), substr(s, 3), substring(s, 1, 0), left(s, 3), right(s, 3), left(s, 0) FROM {db}.t ORDER BY i
+----
+1	ell	llo World	(empty)	Hel	rld	(empty)
+2	tra	raße ÄÉ	(empty)	str	 ÄÉ	(empty)
+3	_b%	b%c*d?e[f]	(empty)	a_b	[f]	(empty)
+4	(empty)	(empty)	(empty)	(empty)	(empty)	(empty)
+5	NULL	NULL	NULL	NULL	NULL	NULL
+6	t's	's "quoted"	(empty)	it'	ed"	(empty)
+7	 pa	padded  	(empty)	  p	d  	(empty)
+
+query IIIII
+SELECT i, instr(s, 'l'), strpos(s, 'o'), position('e' IN s), instr(s, '') FROM {db}.t ORDER BY i
+----
+1	3	5	2	1
+2	0	0	6	1
+3	0	0	9	1
+4	0	0	0	1
+5	NULL	NULL	NULL	NULL
+6	0	9	11	1
+7	0	0	7	1
+
+query IIIIIII
+SELECT i, contains(s, 'll'), starts_with(s, 'He'), prefix(s, 'a_'), ends_with(s, 'ÄÉ'), suffix(s, ''), s ^@ 'str' FROM {db}.t ORDER BY i
+----
+1	true	true	false	false	true	false
+2	false	false	false	true	true	true
+3	false	false	true	false	true	false
+4	false	false	false	false	true	false
+5	NULL	NULL	NULL	NULL	NULL	NULL
+6	false	false	false	false	true	false
+7	false	false	false	false	true	false
+
+query IIII
+SELECT i, starts_with(s, p), ends_with(s, p), contains(s, p) FROM {db}.t ORDER BY i
+----
+1	false	false	false
+2	false	false	false
+3	false	false	false
+4	true	true	true
+5	NULL	NULL	NULL
+6	false	false	false
+7	false	false	false
+
+query IIII
+SELECT i, repeat(s, 2), repeat(s, 0), repeat(s, -1) FROM {db}.t ORDER BY i
+----
+1	Hello WorldHello World	(empty)	(empty)
+2	straße ÄÉstraße ÄÉ	(empty)	(empty)
+3	a_b%c*d?e[f]a_b%c*d?e[f]	(empty)	(empty)
+4	(empty)	(empty)	(empty)
+5	NULL	NULL	NULL
+6	it's "quoted"it's "quoted"	(empty)	(empty)
+7	  padded    padded  	(empty)	(empty)
+
+query IIIII
+SELECT i, unicode(s), ascii(s), chr((i + 64)::INTEGER), chr(233) FROM {db}.t ORDER BY i
+----
+1	72	72	A	é
+2	115	115	B	é
+3	97	97	C	é
+4	-1	0	D	é
+5	NULL	NULL	E	é
+6	105	105	F	é
+7	32	32	G	é
+
+# LIKE is case sensitive and has no default escape character
+query I
+SELECT i FROM {db}.t WHERE s LIKE 'H%' ORDER BY i
+----
+1
+
+query I
+SELECT i FROM {db}.t WHERE s LIKE 'h%' ORDER BY i
+----
+
+query I
+SELECT i FROM {db}.t WHERE s LIKE '%ß%' ORDER BY i
+----
+2
+
+query I
+SELECT i FROM {db}.t WHERE s LIKE 'a_b%' ORDER BY i
+----
+3
+
+query I
+SELECT i FROM {db}.t WHERE s LIKE '%*%' OR s LIKE '%?%' OR s LIKE '%[%' ORDER BY i
+----
+3
+
+query I
+SELECT i FROM {db}.t WHERE s LIKE 'a\_b%' ESCAPE '\' ORDER BY i
+----
+3
+
+query I
+SELECT i FROM {db}.t WHERE s LIKE 'a$_b$%c%' ESCAPE '$' ORDER BY i
+----
+3
+
+query I
+SELECT i FROM {db}.t WHERE s NOT LIKE '%l%' ORDER BY i
+----
+2
+3
+4
+6
+7
+
+query III
+SELECT i, s LIKE p, s NOT LIKE p FROM {db}.t ORDER BY i
+----
+1	true	false
+2	false	true
+3	false	true
+4	true	false
+5	NULL	NULL
+6	true	false
+7	true	false
+
+query I
+SELECT i FROM {db}.t WHERE s ILIKE 'hello%' ORDER BY i
+----
+1
+
+query I
+SELECT i FROM {db}.t WHERE s ILIKE '%STRASSE%' OR s ILIKE '%äé' ORDER BY i
+----
+2
+
+query III
+SELECT i, s ILIKE p, s NOT ILIKE p FROM {db}.t ORDER BY i
+----
+1	true	false
+2	false	true
+3	false	true
+4	true	false
+5	NULL	NULL
+6	true	false
+7	true	false
+
+query I
+SELECT i FROM {db}.t WHERE s GLOB '*o*' ORDER BY i
+----
+1
+6
+
+query I
+SELECT i FROM {db}.t WHERE s GLOB '[a-h]*' ORDER BY i
+----
+3
+
+# strings are compared byte-wise, also for columns with a collation in SQLite
+query I
+SELECT i FROM {db}.t WHERE nc = 'hello' ORDER BY i
+----
+2
+
+query I
+SELECT i FROM {db}.t WHERE nc < 'b' ORDER BY i
+----
+1
+3
+6
+7
+
+query I
+SELECT nc FROM {db}.t ORDER BY nc, i
+----
+Ab
+HELLO
+Hello
+aB
+b
+hello
+NULL
+
+query II
+SELECT nc, count(*) FROM {db}.t GROUP BY nc ORDER BY nc
+----
+Ab	1
+HELLO	1
+Hello	1
+aB	1
+b	1
+hello	1
+NULL	1
+
+query I
+SELECT DISTINCT lower(nc) FROM {db}.t ORDER BY 1
+----
+ab
+b
+hello
+NULL
+
+query III
+SELECT min(nc), max(nc), count(DISTINCT nc) FROM {db}.t
+----
+Ab	hello	6
+
+query I
+SELECT i FROM {db}.t WHERE nc IN ('hello', 'ab') ORDER BY i
+----
+2
+
+query II
+SELECT i, s FROM {db}.t ORDER BY s, i
+----
+4	(empty)
+7	  padded  
+1	Hello World
+3	a_b%c*d?e[f]
+6	it's "quoted"
+2	straße ÄÉ
+5	NULL
+
+query I
+SELECT i FROM {db}.t WHERE s > 'it' ORDER BY i
+----
+2
+6
+
+# regular expressions
+query IIII
+SELECT i, regexp_matches(s, '[a-z]+'), regexp_full_match(s, '[A-Za-z ]+'), regexp_matches(s, 'WORLD', 'i') FROM {db}.t ORDER BY i
+----
+1	true	true	true
+2	true	false	false
+3	true	false	false
+4	false	false	false
+5	NULL	NULL	NULL
+6	true	false	false
+7	true	true	false
+
+query IIII
+SELECT i, regexp_replace(s, '[aeiou]', '_'), regexp_replace(s, '[aeiou]', '_', 'g'), regexp_replace(s, '(\w+) (\w+)', '\2 \1') FROM {db}.t ORDER BY i
+----
+1	H_llo World	H_ll_ W_rld	World Hello
+2	str_ße ÄÉ	str_ß_ ÄÉ	straße ÄÉ
+3	__b%c*d?e[f]	__b%c*d?_[f]	a_b%c*d?e[f]
+4	(empty)	(empty)	(empty)
+5	NULL	NULL	NULL
+6	_t's "quoted"	_t's "q__t_d"	it's "quoted"
+7	  p_dded  	  p_dd_d  	  padded  
+
+query III
+SELECT i, s ~ '^[a-z]', s SIMILAR TO 'H.*' FROM {db}.t ORDER BY i
+----
+1	false	true
+2	true	false
+3	true	false
+4	false	false
+5	NULL	NULL
+6	true	false
+7	false	false
+
+# hashes
+query III
+SELECT i, md5(s), sha256(s) FROM {db}.t ORDER BY i
+----
+1	b10a8db164e0754105b7a99be72e3fe5	a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e
+2	31d4d51684b85b87bedf5a31f8525a57	c4c2f9d3bf012cdc5e022cf3b96b673bd3839321fb790b9df90b6fc5aeea83f1
+3	dc9e394c74f98b8a9732dffe21245723	112ab39aa8372f8bf5e1feef2ceb0025059034a128f7ceafc383afc08c51ba47
+4	d41d8cd98f00b204e9800998ecf8427e	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+5	NULL	NULL
+6	c6e6e65900ab57856f4e64dbc323736c	0405a293396b3c6f098ea3f9b03a839f4095c220ddbaf96415a401cb2bc4fc61
+7	2c10e6b3ece52c46634f659109e15fea	3d4a55719d2ebc89e0e90d5c6ca663ba4871cb0aa98603cf716bf343db149465
+
+# string aggregates
+query I
+SELECT string_agg(s, '|' ORDER BY i) FROM {db}.t
+----
+Hello World|straße ÄÉ|a_b%c*d?e[f]||it's "quoted"|  padded  
+
+query III
+SELECT length(string_agg(s, '|')), length(group_concat(s)), length(listagg(s)) FROM {db}.t
+----
+60	60	60
+
+query II
+SELECT count(DISTINCT lower(nc)), length(string_agg(DISTINCT nc, ',')) FROM {db}.t
+----
+3	25
+
+# DuckDB's substring / left / right with negative offsets and lengths
+query IIIIIII
+SELECT i, substring(s, -3), substring(s, 0, 2), substring(s, 2, -1), substring(s, i), substring(s, -i, 2), substr(s, 3, i - 2) FROM {db}.t ORDER BY i
+----
+1	rld	H	H	Hello World	d	e
+2	 ÄÉ	s	s	traße ÄÉ	ÄÉ	(empty)
+3	[f]	a	a	b%c*d?e[f]	[f	b
+4	(empty)	(empty)	(empty)	(empty)	(empty)	(empty)
+5	NULL	NULL	NULL	NULL	NULL	NULL
+6	ed"	i	i	"quoted"	uo	's "
+7	d  	 	 	ed  	ad	padde
+
+query IIIIII
+SELECT i, left(s, -2), right(s, -2), left(s, i), right(s, i - 3), left(s, 100) FROM {db}.t ORDER BY i
+----
+1	Hello Wor	llo World	H	llo World	Hello World
+2	straße 	raße ÄÉ	st	traße ÄÉ	straße ÄÉ
+3	a_b%c*d?e[	b%c*d?e[f]	a_b	(empty)	a_b%c*d?e[f]
+4	(empty)	(empty)	(empty)	(empty)	(empty)
+5	NULL	NULL	NULL	NULL	NULL
+6	it's "quote	's "quoted"	it's "	ed"	it's "quoted"
+7	  padded	padded  	  padde	ed  	  padded  
+
+# padding / reversing (by grapheme clusters)
+query IIIIII
+SELECT i, lpad(s, 8, '*'), rpad(s, 3, '-'), lpad(s, i::INTEGER, 'ab'), rpad(s, -1, 'x'), lpad(s, 12, 'é') FROM {db}.t ORDER BY i
+----
+1	Hello Wo	Hel	H	(empty)	éHello World
+2	straße Ä	str	st	(empty)	éééstraße ÄÉ
+3	a_b%c*d?	a_b	a_b	(empty)	a_b%c*d?e[f]
+4	********	---	abab	(empty)	éééééééééééé
+5	NULL	NULL	NULL	NULL	NULL
+6	it's "qu	it'	it's "	(empty)	it's "quoted
+7	  padded	  p	  padde	(empty)	éé  padded  
+
+query III
+SELECT i, reverse(s), reverse(nc) FROM {db}.t ORDER BY i
+----
+1	dlroW olleH	olleH
+2	ÉÄ eßarts	olleh
+3	]f[e?d*c%b_a	OLLEH
+4	(empty)	b
+5	NULL	NULL
+6	"detouq" s'ti	bA
+7	  deddap  	Ba
+
+# regular expression extraction, hex and base64
+query IIIII
+SELECT i, regexp_extract(s, '[0-9]+'), regexp_extract(s, '([a-z])([a-z])', 2), regexp_extract(s, 'X', 0, 'i'), regexp_extract(s, '(l+)', 1) FROM {db}.t ORDER BY i
+----
+1	(empty)	l	(empty)	ll
+2	(empty)	t	(empty)	(empty)
+3	(empty)	(empty)	(empty)	(empty)
+4	(empty)	(empty)	(empty)	(empty)
+5	NULL	NULL	NULL	NULL
+6	(empty)	t	(empty)	(empty)
+7	(empty)	a	(empty)	(empty)
+
+query IIIII
+SELECT i, hex(s), bit_length(s), to_base64(encode(s)), from_base64(to_base64(encode(s))) FROM {db}.t ORDER BY i
+----
+1	48656C6C6F20576F726C64	88	SGVsbG8gV29ybGQ=	Hello World
+2	73747261C39F6520C384C389	96	c3RyYcOfZSDDhMOJ	stra\xC3\x9Fe \xC3\x84\xC3\x89
+3	615F6225632A643F655B665D	96	YV9iJWMqZD9lW2Zd	a_b%c*d?e[f]
+4	(empty)	0	(empty)	(empty)
+5	NULL	NULL	NULL	NULL
+6	69742773202271756F74656422	104	aXQncyAicXVvdGVkIg==	it\x27s \x22quoted\x22
+7	20207061646465642020	80	ICBwYWRkZWQgIA==	  padded  
+
+endloop
+
+# LIKE with a constant pattern is serialized as a (case sensitive) GLOB
+query II
+EXPLAIN SELECT i FROM s.t WHERE s LIKE 'a\_b%' ESCAPE '\'
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*\("s" GLOB 'a_b\*'\).*
+
+query II
+EXPLAIN SELECT i FROM s.t WHERE s LIKE '%*%'
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*\("s" GLOB '\*\[\*\]\*'\).*
+
+# non-constant patterns, ILIKE and Unicode case conversion use the functions of the extension
+query II
+EXPLAIN SELECT s LIKE p, s ILIKE 'a%', lower(s) FROM s.t
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*duckdb_like\("s", "p"\).*duckdb_ilike\("s", 'a%'\).*duckdb_lower\("s"\).*
+
+# columns with a collation are compared with the BINARY collation
+query II
+EXPLAIN SELECT nc FROM s.t ORDER BY nc
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*"nc" COLLATE BINARY AS "nc".*
+
+# padding with an empty string raises an error in both
+foreach db l s
+
+statement error
+SELECT lpad(s, 20, '') FROM {db}.t ORDER BY i
+----
+Insufficient padding
+
+endloop

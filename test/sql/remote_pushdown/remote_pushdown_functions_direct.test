@@ -1,0 +1,51 @@
+# name: test/sql/remote_pushdown/remote_pushdown_functions_direct.test
+# description: The duckdb_* functions raise errors (instead of crashing) for any arguments they are called with
+# group: [remote_pushdown]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_functions_direct.db' AS s (TYPE SQLITE)
+
+statement ok
+DETACH s
+
+statement ok
+SET sqlite_enable_remote_pushdown = true
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_functions_direct.db' AS s (TYPE SQLITE)
+
+statement ok
+CREATE TABLE s.t AS SELECT range AS i, repeat('x', 1000) AS v FROM range(20000)
+
+# more than 9 groups
+query I
+FROM sqlite_query('s', 'SELECT duckdb_regexp_extract(''abcdefghijklm'', ''(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l)'', 11, '''')')
+----
+k
+
+query I
+FROM sqlite_query('s', 'SELECT duckdb_regexp_extract(''abcdefghijklm'', ''(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l)'', 13, '''')')
+----
+(empty)
+
+# invalid quantiles
+foreach quantile -0.5 1.5 NULL
+
+statement error
+FROM sqlite_query('s', 'SELECT duckdb_quantile_disc(i, {quantile}) FROM t')
+----
+The quantile must be between 0 and 1
+
+statement error
+FROM sqlite_query('s', 'SELECT duckdb_quantile_cont(i, {quantile}) FROM t')
+----
+The quantile must be between 0 and 1
+
+endloop
+
+query I
+FROM sqlite_query('s', 'SELECT duckdb_quantile_disc(i, 0.5) FROM t')
+----
+9999

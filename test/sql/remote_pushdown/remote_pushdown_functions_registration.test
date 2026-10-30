@@ -1,0 +1,59 @@
+# name: test/sql/remote_pushdown/remote_pushdown_functions_registration.test
+# description: The duckdb_* functions are only registered with remote pushdown, and only for top-level SQL
+# group: [remote_pushdown]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_functions_registration.db' AS l (TYPE SQLITE)
+
+statement ok
+CREATE TABLE l.t AS SELECT 'Ä' AS s
+
+# without remote pushdown the functions are not registered
+statement error
+FROM sqlite_query(l, 'SELECT duckdb_lower(s) FROM t')
+----
+no such function: duckdb_lower
+
+statement ok
+SET sqlite_enable_remote_pushdown = true
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_functions_registration.db' AS s (TYPE SQLITE)
+
+query I
+FROM sqlite_query(s, 'SELECT duckdb_lower(s) FROM t')
+----
+ä
+
+# the functions cannot be used by the views (or triggers) stored in the database file
+statement ok
+FROM sqlite_query(s, 'CREATE VIEW v AS SELECT duckdb_lower(s) AS s FROM t')
+
+statement error
+FROM sqlite_query(s, 'SELECT * FROM v')
+----
+unsafe use of duckdb_lower()
+
+statement ok
+FROM sqlite_query(s, 'CREATE TABLE log(s TEXT)')
+
+statement ok
+FROM sqlite_query(s, 'CREATE TRIGGER trg AFTER INSERT ON t BEGIN INSERT INTO log VALUES (duckdb_upper(NEW.s)); END')
+
+statement error
+FROM sqlite_query(s, 'INSERT INTO t VALUES (''x'')')
+----
+unsafe use of duckdb_upper()
+
+# the queries that remote pushdown generates still use them
+query I
+SELECT lower(s) FROM s.t
+----
+ä
+
+query II
+EXPLAIN SELECT lower(s) FROM s.t
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*duckdb_lower.*

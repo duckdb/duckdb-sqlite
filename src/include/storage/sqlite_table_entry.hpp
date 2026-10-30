@@ -23,6 +23,21 @@ public:
 	//! Whether each column has TEXT affinity in a UTF-8 database
 	vector<bool> utf8_text_affinity;
 
+	//! The metadata that is only used by remote pushdown - it is only read from SQLite (has_pushdown_info) for
+	//! databases attached with sqlite_enable_remote_pushdown
+	bool has_pushdown_info = false;
+	//! Whether each column compares strings with the BINARY collation
+	vector<bool> binary_collation;
+	//! Whether each column has REAL affinity - other columns that are read as DOUBLE can store integers
+	vector<bool> real_affinity;
+	//! The columns that rows can be looked up by - the row id, and the leading columns of indexes
+	case_insensitive_set_t indexed_columns;
+	//! Whether a unique index (or the primary key) compares a column with a collation other than BINARY - SQLite then
+	//! finds conflicts that DuckDB does not
+	bool non_binary_unique_key = false;
+	//! Whether the table has generated columns - which DuckDB does not read, but which SQLite expands a * to
+	bool generated_columns = false;
+
 public:
 	const ColumnList &GetColumns() const override;
 

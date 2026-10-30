@@ -1,0 +1,616 @@
+# name: test/sql/remote_pushdown/remote_pushdown_semantics.test
+# description: Translations that preserve DuckDB's semantics: conditions, set operations, NUMERIC columns, sums
+# group: [remote_pushdown]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_semantics.db' AS l (TYPE SQLITE)
+
+statement ok
+SET sqlite_enable_remote_pushdown = true
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_semantics.db' AS s (TYPE SQLITE)
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE b(id INTEGER PRIMARY KEY, s TEXT, i INTEGER, r REAL)')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO b VALUES (1,''true'',1,1.5),(2,''false'',0,0.0),(3,''t'',2,-0.5),(4,''f'',NULL,NULL),(5,NULL,-1,2.0),(6,''TRUE'',5,0.25),(7,''1'',3,1.0),(8,''0'',0,-3.0)')
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE u(id INTEGER PRIMARY KEY, s TEXT, k INTEGER, dt DATE, ts TIMESTAMP)')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO u VALUES (1,''42'',42,''2024-07-04'',''2024-07-04 00:00:00''),(2,''abc'',7,''2024-01-01'',''2024-01-01 10:00:00''),(3,''7'',1,NULL,''2024-07-04 00:00:00''),(4,NULL,NULL,''2020-02-29'',NULL),(5,''1e3'',1000,''2024-07-04'',''2024-07-04 12:00:00'')')
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE nm(id INTEGER PRIMARY KEY, n NUMERIC, dc DECIMAL(20,0), r REAL)')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO nm VALUES (1,9007199254740993,9007199254740993,1.0),(2,9007199254740992,9007199254740992,2.0),(3,9223372036854775807,9223372036854775807,3.0),(4,7,7,1e300),(5,7.5,NULL,4.0),(6,NULL,1,-1e300),(7,3,3,5.5)')
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE big(id INTEGER PRIMARY KEY, i INTEGER)')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO big VALUES (1,9223372036854775807),(2,-9223372036854775808),(3,1),(4,-5),(5,0),(6,42),(7,7),(8,NULL)')
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE d(id INTEGER PRIMARY KEY, dt DATE, ts TIMESTAMP)')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO d VALUES (1,''9999-12-31'',''9999-12-31 10:00:00''),(2,''2000-02-29'',''2000-02-29 12:34:56.789''),(3,''1969-12-31'',''1969-12-31 23:59:59.999999''),(4,''2024-02-10'',''2024-02-10 00:00:00''),(5,NULL,NULL)')
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE gl(id INTEGER PRIMARY KEY, s TEXT)')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO gl VALUES (1,''é''),(2,''e''),(3,''ab''),(4,''xé''),(5,'''')')
+
+# the results are the same with and without remote pushdown
+foreach db l s
+
+# non-boolean values that are used as conditions are converted to BOOLEAN
+query I
+SELECT id FROM {db}.b WHERE i ORDER BY id
+----
+1
+3
+5
+6
+7
+
+query I
+SELECT id FROM {db}.b WHERE r ORDER BY id
+----
+1
+3
+5
+6
+7
+8
+
+query III
+SELECT id, NOT i, NOT r FROM {db}.b ORDER BY id
+----
+1	false	false
+2	true	true
+3	false	false
+4	NULL	NULL
+5	false	false
+6	false	false
+7	false	false
+8	true	false
+
+query III
+SELECT id, CASE WHEN i THEN 'y' ELSE 'n' END, CASE WHEN r THEN 'y' ELSE 'n' END FROM {db}.b ORDER BY id
+----
+1	y	y
+2	n	n
+3	y	y
+4	n	n
+5	y	y
+6	y	y
+7	y	y
+8	n	y
+
+query I
+SELECT id FROM {db}.b WHERE s IN ('true', 'false', 't', 'f', 'TRUE', '1', '0') AND s ORDER BY id
+----
+1
+3
+6
+7
+
+query II
+SELECT id, s IN ('true', 'false', 't', 'f', 'TRUE', '1', '0') AND s FROM {db}.b ORDER BY id
+----
+1	true
+2	false
+3	true
+4	false
+5	NULL
+6	true
+7	true
+8	false
+
+query II
+SELECT id, s IS NULL OR s FROM {db}.b WHERE s <> 'f' OR s IS NULL ORDER BY id
+----
+1	true
+2	false
+3	true
+5	true
+6	true
+7	true
+8	false
+
+query III
+SELECT count(*) FILTER (WHERE i), count(*) FILTER (WHERE r), sum(i) FILTER (WHERE s IN ('t', 'f') AND s) FROM {db}.b
+----
+5	6	2
+
+query II
+SELECT id, sum(id) FILTER (WHERE i) OVER (ORDER BY id) FROM {db}.b ORDER BY id
+----
+1	1
+2	1
+3	4
+4	4
+5	9
+6	15
+7	22
+8	22
+
+query II
+SELECT b1.id, b2.id FROM {db}.b b1 JOIN {db}.b b2 ON b1.i WHERE b2.id = 1 ORDER BY 1, 2
+----
+1	1
+3	1
+5	1
+6	1
+7	1
+
+query II
+SELECT i, count(*) FROM {db}.b GROUP BY i HAVING max(i) ORDER BY 1
+----
+-1	1
+1	1
+2	1
+3	1
+5	1
+
+query II
+SELECT id, row_number() OVER (ORDER BY id) AS rn FROM {db}.b QUALIFY rn % 2 ORDER BY id
+----
+1	1
+3	3
+5	5
+7	7
+
+query I
+SELECT id FROM {db}.b WHERE s ORDER BY id
+----
+1
+3
+6
+7
+
+# the members of set operations are converted to the result types
+query I
+SELECT s FROM {db}.u UNION SELECT k FROM {db}.u ORDER BY 1
+----
+1
+1000
+1e3
+42
+7
+abc
+NULL
+
+query I
+SELECT k FROM {db}.u UNION SELECT s FROM {db}.u ORDER BY 1
+----
+1
+1000
+1e3
+42
+7
+abc
+NULL
+
+query I
+SELECT s FROM {db}.u INTERSECT SELECT k FROM {db}.u ORDER BY 1
+----
+42
+7
+NULL
+
+query I
+SELECT k FROM {db}.u EXCEPT SELECT s FROM {db}.u ORDER BY 1
+----
+1
+1000
+
+query I
+SELECT count(*) FROM (SELECT s FROM {db}.u UNION SELECT k FROM {db}.u)
+----
+7
+
+query I
+SELECT x FROM (SELECT s AS x FROM {db}.u UNION ALL SELECT k FROM {db}.u) WHERE x > '5' ORDER BY 1
+----
+7
+7
+abc
+
+query I
+SELECT dt FROM {db}.u UNION SELECT ts FROM {db}.u ORDER BY 1
+----
+2020-02-29 00:00:00
+2024-01-01 00:00:00
+2024-01-01 10:00:00
+2024-07-04 00:00:00
+2024-07-04 12:00:00
+NULL
+
+query I
+SELECT count(DISTINCT x) FROM (SELECT dt AS x FROM {db}.u UNION ALL SELECT ts FROM {db}.u)
+----
+5
+
+query I
+SELECT x FROM (SELECT dt AS x FROM {db}.u UNION SELECT ts FROM {db}.u) WHERE x = '2024-07-04 00:00:00'
+----
+2024-07-04 00:00:00
+
+query I
+SELECT k > 5 AS x FROM {db}.u UNION SELECT 'true' ORDER BY 1
+----
+false
+true
+NULL
+
+query II
+SELECT id, k FROM {db}.u UNION ALL SELECT id, k * 1.5 FROM {db}.u ORDER BY 1, 2
+----
+1	42.0
+1	63.0
+2	7.0
+2	10.5
+3	1.0
+3	1.5
+4	NULL
+4	NULL
+5	1000.0
+5	1500.0
+
+query I
+SELECT s FROM {db}.u UNION (SELECT k FROM {db}.u UNION SELECT id FROM {db}.u) ORDER BY 1
+----
+1
+1000
+1e3
+2
+3
+4
+42
+5
+7
+abc
+NULL
+
+query I
+SELECT s FROM {db}.u UNION (SELECT k FROM {db}.u INTERSECT SELECT id FROM {db}.u) ORDER BY 1
+----
+1
+1e3
+42
+7
+abc
+NULL
+
+query I
+WITH RECURSIVE r(x) AS (SELECT 1 UNION ALL SELECT x * 1.6 FROM r WHERE x < 20) SELECT x FROM r ORDER BY x
+----
+1
+2
+3
+5
+8
+13
+21
+
+# NUMERIC / DECIMAL columns are read as DOUBLE
+query I
+SELECT DISTINCT n FROM {db}.nm ORDER BY 1
+----
+3.0
+7.0
+7.5
+9007199254740992.0
+9.223372036854776e+18
+NULL
+
+query II
+SELECT n, count(*) FROM {db}.nm GROUP BY n ORDER BY n
+----
+3.0	1
+7.0	1
+7.5	1
+9007199254740992.0	2
+9.223372036854776e+18	1
+NULL	1
+
+query II
+SELECT count(DISTINCT n), count(DISTINCT dc) FROM {db}.nm
+----
+5	5
+
+query IIII
+SELECT id, n = 9007199254740992, n > 9007199254740992, n IN (9007199254740992, 7) FROM {db}.nm ORDER BY id
+----
+1	true	false	true
+2	true	false	true
+3	false	true	false
+4	false	false	true
+5	false	false	false
+6	NULL	NULL	NULL
+7	false	false	false
+
+query II
+SELECT a.id, b.id FROM {db}.nm a JOIN {db}.nm b ON a.n = b.n ORDER BY 1, 2
+----
+1	1
+1	2
+2	1
+2	2
+3	3
+4	4
+5	5
+7	7
+
+query IIII
+SELECT sum(n), avg(n), sum(dc), avg(dc) FROM {db}.nm WHERE id <> 4 AND id <> 6
+----
+9.241386435364258e+18	1.8482772870728515e+18	9.241386435364258e+18	2.3103466088410644e+18
+
+query II
+SELECT id, sum(n) OVER (ORDER BY id) FROM {db}.nm WHERE id <> 4 ORDER BY id
+----
+1	9007199254740992.0
+2	1.8014398509481984e+16
+3	9.241386435364258e+18
+5	9.241386435364258e+18
+6	9.241386435364258e+18
+7	9.241386435364258e+18
+
+query I
+SELECT n FROM {db}.nm UNION SELECT dc FROM {db}.nm ORDER BY 1
+----
+1.0
+3.0
+7.0
+7.5
+9007199254740992.0
+9.223372036854776e+18
+NULL
+
+query II
+SELECT id, row_number() OVER (PARTITION BY n ORDER BY id) FROM {db}.nm ORDER BY id
+----
+1	1
+2	2
+3	1
+4	1
+5	1
+6	1
+7	1
+
+# avg of integers does not overflow
+query II
+SELECT avg(i), avg(DISTINCT i) FROM {db}.big
+----
+6.285714285714286	6.285714285714286
+
+query II
+SELECT id, avg(i) OVER (ORDER BY id ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM {db}.big ORDER BY id
+----
+1	-0.5
+2	0.0
+3	-3.0744573456182584e+18
+4	-1.3333333333333333
+5	12.333333333333334
+6	16.333333333333332
+7	24.5
+8	7.0
+
+query II
+SELECT id % 2, avg(i) FROM {db}.big GROUP BY 1 ORDER BY 1
+----
+0	-3.0744573456182584e+18
+1	2.305843009213694e+18
+
+# floating point sums over sliding frames
+query II
+SELECT id, sum(r) OVER (ORDER BY id ROWS BETWEEN 1 FOLLOWING AND 3 FOLLOWING) FROM {db}.nm ORDER BY id
+----
+1	1e+300
+2	1e+300
+3	0.0
+4	-1e+300
+5	-1e+300
+6	5.5
+7	NULL
+
+query II
+SELECT id, avg(r) OVER (ORDER BY id ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM {db}.nm ORDER BY id
+----
+1	1.0
+2	1.5
+3	2.0
+4	3.3333333333333335e+299
+5	3.3333333333333335e+299
+6	0.0
+7	-3.3333333333333335e+299
+
+query III
+SELECT id, sum(r) OVER (ORDER BY id), sum(r) OVER (ORDER BY id ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) FROM {db}.nm ORDER BY id
+----
+1	1.0	5.5
+2	3.0	5.5
+3	6.0	5.5
+4	1e+300	5.5
+5	1e+300	-1e+300
+6	0.0	-1e+300
+7	5.5	5.5
+
+# modulo overflow
+query III
+SELECT id, i % 3, i % -3 FROM {db}.big ORDER BY id
+----
+1	1	1
+2	-2	-2
+3	1	1
+4	-2	-2
+5	0	0
+6	0	0
+7	1	1
+8	NULL	NULL
+
+# signed zeros
+query IIIIII
+SELECT id, -r, 1 / r, 1 / -r, (-r)::VARCHAR, atan2(-r, -1) FROM {db}.b WHERE id = 2
+----
+2	-0.0	inf	-inf	-0.0	-3.141592653589793
+
+query III
+SELECT id, r * -1, 1 / (r * -1) FROM {db}.b WHERE id = 2
+----
+2	-0.0	-inf
+
+# date edge cases
+query III
+SELECT id, last_day(dt), last_day(ts) FROM {db}.d ORDER BY id
+----
+1	9999-12-31	9999-12-31
+2	2000-02-29	2000-02-29
+3	1969-12-31	1969-12-31
+4	2024-02-29	2024-02-29
+5	NULL	NULL
+
+query IIII
+SELECT id, julian(ts), julian(dt), date_part('julian', ts) FROM {db}.d ORDER BY id
+----
+1	5373484.416666667	5373484.0	5373484.416666667
+2	2451604.524268391	2451604.0	2451604.524268391
+3	2440588.0	2440587.0	2440588.0
+4	2460351.0	2460351.0	2460351.0
+5	NULL	NULL	NULL
+
+query III
+SELECT id, epoch_ms(ts), epoch(ts) FROM {db}.d ORDER BY id
+----
+1	253402250400000	253402250400.0
+2	951827696789	951827696.789
+3	0	-1e-06
+4	1707523200000	1707523200.0
+5	NULL	NULL
+
+# DuckDB's GLOB matches a byte with a ?
+query IIIII
+SELECT id, s GLOB '?', s GLOB '??', s GLOB 'x?', s GLOB '*' FROM {db}.gl ORDER BY id
+----
+1	false	true	false	true
+2	true	false	false	true
+3	false	true	false	true
+4	false	false	false	true
+5	false	false	false	true
+
+query IIII
+SELECT id, s LIKE '_', s LIKE '__', s LIKE 'x_' FROM {db}.gl ORDER BY id
+----
+1	true	false	false
+2	true	false	false
+3	false	true	false
+4	false	true	true
+5	false	false	false
+
+# shifts raise an error for an overflow
+query IIIII
+SELECT id, i << 2, i >> 1, i >> 64, i << 0 FROM {db}.big WHERE i BETWEEN 0 AND 100 ORDER BY id
+----
+3	4	0	0	1
+5	0	0	0	0
+6	168	21	0	42
+7	28	3	0	7
+
+query IIII
+SELECT id, (abs(i) % 4)::UTINYINT << 6, (abs(i) % 4)::TINYINT << 5, (i % 100)::INTEGER << 20 FROM {db}.big WHERE i BETWEEN 0 AND 100 ORDER BY id
+----
+3	64	32	1048576
+5	0	0	0
+6	128	64	44040192
+7	192	96	7340032
+
+# string literals are converted to the type of the other expressions
+query IIII
+SELECT id, COALESCE(dt, '2020-01-01'), COALESCE(ts, '2020-01-01'), CASE WHEN id > 2 THEN dt ELSE '2021-02-03' END FROM {db}.u ORDER BY id
+----
+1	2024-07-04	2024-07-04 00:00:00	2021-02-03
+2	2024-01-01	2024-01-01 10:00:00	2021-02-03
+3	2020-01-01	2024-07-04 00:00:00	NULL
+4	2020-02-29	2020-01-01 00:00:00	2020-02-29
+5	2024-07-04	2024-07-04 12:00:00	2024-07-04
+
+query III
+SELECT id, COALESCE(k, '5'), COALESCE(s, 'x') FROM {db}.u ORDER BY id
+----
+1	42	42
+2	7	abc
+3	1	7
+4	5	x
+5	1000	1e3
+
+endloop
+
+# errors are raised like in DuckDB
+foreach db l s
+
+statement error
+SELECT id FROM {db}.u WHERE s ORDER BY id
+----
+to BOOL
+
+statement error
+SELECT id FROM {db}.u WHERE dt ORDER BY id
+----
+Unimplemented type for cast (DATE -> BOOLEAN)
+
+statement error
+SELECT id, i % -1 FROM {db}.big ORDER BY id
+----
+Overflow in division
+
+endloop
+
+query II
+EXPLAIN SELECT id FROM s.b WHERE s IN ('t', 'f') AND s
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*duckdb_cast\("s", 'VARCHAR', 'BOOLEAN'\).*
+
+query II
+EXPLAIN SELECT s FROM s.u UNION SELECT k FROM s.u
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*UNION SELECT CAST\("k" AS TEXT\) AS "k".*
+
+query II
+EXPLAIN SELECT DISTINCT n FROM s.nm
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*CAST\("n" AS REAL\) AS "n".*
+
+query II
+EXPLAIN SELECT avg(i) FROM s.big
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*duckdb_avg\("i"\).*
+
+query II
+EXPLAIN SELECT sum(r) OVER (ORDER BY id ROWS BETWEEN 1 FOLLOWING AND 3 FOLLOWING) FROM s.nm
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*duckdb_frame_sum\("r"\) OVER.*
+
+foreach db l s
+
+statement error
+SELECT id, i << 62 FROM {db}.big WHERE i BETWEEN 0 AND 100 ORDER BY id
+----
+Overflow in left shift
+
+statement error
+SELECT id, i << 1 FROM {db}.big WHERE i < 0 ORDER BY id
+----
+Cannot left-shift negative number
+
+endloop

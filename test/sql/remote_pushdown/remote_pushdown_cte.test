@@ -1,0 +1,148 @@
+# name: test/sql/remote_pushdown/remote_pushdown_cte.test
+# description: Test remote pushdown of common table expressions into SQLite
+# group: [remote_pushdown]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_cte.db' AS l (TYPE SQLITE)
+
+statement ok
+SET sqlite_enable_remote_pushdown = true
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_cte.db' AS s (TYPE SQLITE)
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE a(i INTEGER, v TEXT, d DATE)')
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE b(i INTEGER, w TEXT)')
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE c(j INTEGER, i INTEGER)')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO a VALUES (1, ''one'', ''2020-01-01''), (2, ''two'', ''2020-02-02''), (3, ''three'', NULL), (NULL, ''null'', ''2020-04-04'')')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO b VALUES (1, ''uno''), (3, ''tres''), (3, ''drei''), (4, ''cuatro''), (NULL, ''nada'')')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO c VALUES (10, 1), (20, 4), (30, NULL)')
+
+# the results are the same with and without remote pushdown
+foreach db l s
+
+query II
+WITH x AS (SELECT i, v FROM {db}.a WHERE i > 1) SELECT * FROM x ORDER BY i
+----
+2	two
+3	three
+
+query II
+WITH x AS (SELECT i FROM {db}.a), y AS (SELECT i, w FROM {db}.b) SELECT x.i, y.w FROM x JOIN y ON x.i = y.i ORDER BY 1, 2
+----
+1	uno
+3	drei
+3	tres
+
+query II
+WITH x(k, name) AS (SELECT i, v FROM {db}.a) SELECT k, name FROM x WHERE k IS NOT NULL ORDER BY k
+----
+1	one
+2	two
+3	three
+
+query I
+WITH x AS MATERIALIZED (SELECT i FROM {db}.b) SELECT count(*) FROM x
+----
+5
+
+query I
+WITH x AS NOT MATERIALIZED (SELECT i FROM {db}.b) SELECT count(*) FROM x
+----
+5
+
+query I
+WITH x AS (SELECT i FROM {db}.a) SELECT * FROM x WHERE i IN (SELECT i FROM x WHERE i < 3) ORDER BY 1
+----
+1
+2
+
+query II
+WITH x AS (SELECT i FROM {db}.a) SELECT (SELECT max(i) FROM x), count(*) FROM x
+----
+3	4
+
+query I
+SELECT * FROM (WITH x AS (SELECT i FROM {db}.b) SELECT i FROM x WHERE i > 1) ORDER BY 1
+----
+3
+3
+4
+
+query I
+WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < (SELECT max(i) FROM {db}.b)) SELECT n FROM r ORDER BY n
+----
+1
+2
+3
+4
+
+query II
+WITH RECURSIVE r(n, s) AS (SELECT i, v FROM {db}.a WHERE i = 1 UNION ALL SELECT r.n + 1, r.s || '+' FROM r WHERE r.n < 4) SELECT * FROM r ORDER BY n
+----
+1	one
+2	one+
+3	one++
+4	one+++
+
+query I
+WITH RECURSIVE r(n) AS (SELECT i FROM {db}.c WHERE i IS NOT NULL UNION SELECT n + 1 FROM r WHERE n < 5) SELECT n FROM r ORDER BY n
+----
+1
+2
+3
+4
+5
+
+query II
+WITH x AS (SELECT i, count(*) AS c FROM {db}.b GROUP BY i) SELECT a.v, x.c FROM {db}.a JOIN x ON a.i = x.i ORDER BY 1
+----
+one	1
+three	2
+
+endloop
+
+query II
+EXPLAIN WITH x(k, name) AS (SELECT i, v FROM s.a) SELECT k, name FROM x
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*WITH "x" \("k", "name"\) AS \(SELECT "i", "v" FROM .*\) SELECT "k", "name" FROM "x".*
+
+query II
+EXPLAIN WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < (SELECT max(i) FROM s.b)) SELECT n FROM r
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*WITH RECURSIVE "r" \("n"\) AS \(SELECT 1 AS "1" UNION ALL SELECT \("n" \+ 1\) AS "\(n \+ 1\)" FROM "r".*
+
+query II
+EXPLAIN WITH x AS MATERIALIZED (SELECT i FROM s.b) SELECT count(*) FROM x
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*AS MATERIALIZED.*
+
+# a qualified table reference with the name of a CTE would refer to the CTE once the catalog name is stripped
+query I
+WITH b AS (SELECT 42 AS i) SELECT count(*) FROM s.b
+----
+5
+
+query II
+EXPLAIN WITH b AS (SELECT 42 AS i) SELECT count(*) FROM s.b
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+# USING KEY is DuckDB-specific
+query II
+EXPLAIN WITH RECURSIVE r(k, n) USING KEY (k) AS (SELECT i, 1 FROM s.c WHERE i = 1 UNION SELECT k, n + 1 FROM r WHERE n < 3) SELECT * FROM r
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*

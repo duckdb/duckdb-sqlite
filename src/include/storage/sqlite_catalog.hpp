@@ -13,6 +13,7 @@
 #include "duckdb/catalog/catalog.hpp"
 #include "sqlite_options.hpp"
 #include "sqlite_db.hpp"
+#include "storage/sqlite_capabilities.hpp"
 
 namespace duckdb {
 class SQLiteSchemaEntry;
@@ -67,8 +68,24 @@ public:
 
 	static dbconnector::attached::AttachedCatalog Lookup(ClientContext &ctx, const Identifier &name);
 
+	bool Supports(RemoteCapability capability) const override {
+		return options.remote_pushdown && capabilities.Supports(capability);
+	}
+	bool SupportsPushdown(const ParsedExpression &expression) override;
+	bool SupportsPushdown(const TableRef &ref) override;
+	bool SupportsPushdown(const QueryNode &node) override;
+	bool SupportsPushdown(const SQLStatement &statement) override;
+	unique_ptr<TableRef> RemoteExecute(ClientContext &context, unique_ptr<QueryNode> node) override;
+	//! Whether the query of a pushed down statement only uses constructs that are translated whatever types they
+	//! operate on
+	bool SupportsStatementQuery(QueryNode &node) {
+		return capabilities.SupportsStatementQuery(node);
+	}
+	unique_ptr<TableRef> RemoteExecute(ClientContext &context, unique_ptr<SQLStatement> statement) override;
+
 private:
 	void DropSchema(ClientContext &context, DropInfo &info) override;
+	bool HasUTF8Encoding(ClientContext &context);
 
 private:
 	unique_ptr<SQLiteSchemaEntry> main_schema;
@@ -87,6 +104,11 @@ private:
 	mutex in_memory_lock;
 	//! Whether or not there is any active transaction on the in-memory database
 	bool active_in_memory;
+	//! Decides which queries and statements are pushed down (if remote pushdown is enabled)
+	SQLiteCapabilities capabilities;
+	//! Whether the database uses the UTF-8 encoding - strings are only compared like DuckDB compares them then
+	mutex encoding_lock;
+	optional_idx utf8_encoding;
 };
 
 } // namespace duckdb

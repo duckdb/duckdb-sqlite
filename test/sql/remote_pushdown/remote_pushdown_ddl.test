@@ -1,0 +1,212 @@
+# name: test/sql/remote_pushdown/remote_pushdown_ddl.test
+# description: Test remote pushdown of DDL statements into SQLite
+# group: [remote_pushdown]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/rp_ddl_l.db' AS l (TYPE SQLITE)
+
+statement ok
+SET sqlite_enable_remote_pushdown = true
+
+statement ok
+ATTACH '{TEST_DIR}/rp_ddl_s.db' AS s (TYPE SQLITE)
+
+foreach db l s
+
+statement ok
+FROM sqlite_query({db}, 'CREATE TABLE t(i INTEGER PRIMARY KEY, v TEXT, d DOUBLE, dt DATE)')
+
+statement ok
+INSERT INTO {db}.t VALUES (1, 'one', 1.5, '2020-01-01'), (2, 'two', 2.5, '2021-02-03'), (3, NULL, NULL, NULL)
+
+# CREATE TABLE AS
+query I
+CREATE TABLE {db}.t2 AS SELECT i, v, dt, i > 1 AS b FROM {db}.t WHERE i > 1
+----
+2
+
+query IIII
+SELECT * FROM {db}.t2 ORDER BY i
+----
+2	two	2021-02-03	1
+3	NULL	NULL	1
+
+# the columns get the same types as in a regular CREATE TABLE AS
+query I
+SELECT * FROM sqlite_query({db}, 'SELECT sql FROM sqlite_master WHERE name = ''t2''')
+----
+CREATE TABLE t2(i BIGINT, v VARCHAR, dt VARCHAR, b BIGINT)
+
+query I
+CREATE OR REPLACE TABLE {db}.t2 AS SELECT count(*) AS c, max(v) AS m FROM {db}.t
+----
+1
+
+query II
+SELECT * FROM {db}.t2
+----
+3	two
+
+statement error
+CREATE TABLE {db}.t2 AS SELECT 1 AS x
+----
+already exists
+
+# queries that cannot be translated whatever types they operate on - only the query is pushed down
+query I
+CREATE TABLE {db}.t3 AS SELECT i, upper(v) AS uv FROM {db}.t
+----
+3
+
+query II
+SELECT * FROM {db}.t3 ORDER BY i
+----
+1	ONE
+2	TWO
+3	NULL
+
+# CREATE VIEW
+statement ok
+CREATE VIEW {db}.v1 AS SELECT i, v FROM {db}.t WHERE i > 1
+
+query II
+SELECT * FROM {db}.v1 ORDER BY i
+----
+2	two
+3	NULL
+
+statement ok
+CREATE OR REPLACE VIEW {db}.v1 (a, b) AS SELECT i, d FROM {db}.t
+
+query II
+SELECT * FROM {db}.v1 ORDER BY a
+----
+1	1.5
+2	2.5
+3	NULL
+
+# DROP
+statement ok
+DROP VIEW {db}.v1
+
+statement ok
+DROP TABLE {db}.t3
+
+statement ok
+DROP TABLE IF EXISTS {db}.t3
+
+statement error
+DROP TABLE {db}.t3
+----
+does not exist
+
+query I
+SELECT name FROM sqlite_query({db}, 'SELECT name FROM sqlite_master ORDER BY name')
+----
+t
+t2
+
+# ALTER TABLE
+statement ok
+ALTER TABLE {db}.t2 RENAME TO t3
+
+statement ok
+ALTER TABLE {db}.t3 RENAME COLUMN c TO cnt
+
+statement ok
+ALTER TABLE {db}.t3 ADD COLUMN x INTEGER
+
+statement ok
+ALTER TABLE {db}.t3 ADD COLUMN IF NOT EXISTS x INTEGER
+
+statement ok
+ALTER TABLE {db}.t3 DROP COLUMN m
+
+statement ok
+ALTER TABLE {db}.t3 DROP COLUMN IF EXISTS m
+
+query II
+SELECT * FROM {db}.t3
+----
+3	NULL
+
+query I
+SELECT * FROM sqlite_query({db}, 'SELECT sql FROM sqlite_master WHERE name = ''t3''')
+----
+CREATE TABLE "t3"(cnt BIGINT, x INTEGER)
+
+statement error
+ALTER TABLE {db}.t3 DROP COLUMN nope
+----
+no such column
+
+endloop
+
+# the statements were executed in SQLite
+query II
+EXPLAIN CREATE TABLE s.t4 AS SELECT i, v FROM s.t WHERE i > 1
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*Preliminary Queries:.*CREATE TABLE t4\(i BIGINT, v VARCHAR\).*INSERT INTO "t4".*
+
+query II
+EXPLAIN CREATE TABLE s.t4 AS SELECT i, upper(v) AS uv FROM s.t
+----
+physical_plan	<REGEX>:(?s).*Create Table As.*Sqlite Query.*duckdb_upper.*
+
+query II
+EXPLAIN DROP TABLE s.t3
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*DROP TABLE t3.*
+
+query II
+EXPLAIN ALTER TABLE s.t3 RENAME TO t4
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*ALTER TABLE t3 RENAME TO t4.*
+
+# views are translated if DuckDB reads the translated SQL back the same way
+statement ok
+FROM sqlite_query(s, 'CREATE TABLE w(i INTEGER, v TEXT)')
+
+statement ok
+INSERT INTO s.w SELECT i, v FROM s.t
+
+statement ok
+CREATE VIEW s.v2 AS SELECT i, v FROM s.w WHERE i > 1 AND v IS NOT NULL
+
+query I
+SELECT * FROM sqlite_query(s, 'SELECT sql FROM sqlite_master WHERE name = ''v2''')
+----
+CREATE VIEW "v2" AS SELECT "i", "v" FROM "w" WHERE (("i" > 1) AND ("v" IS NOT NULL))
+
+query II
+SELECT * FROM s.v2
+----
+2	two
+
+# otherwise (e.g. for columns that require a conversion when they are read) they are stored like a regular
+# CREATE VIEW stores them
+statement ok
+CREATE VIEW s.v3 AS SELECT i, v FROM s.t WHERE dt > DATE '2020-06-01'
+
+query I
+SELECT * FROM sqlite_query(s, 'SELECT sql FROM sqlite_master WHERE name = ''v3''')
+----
+CREATE VIEW v3 AS SELECT i, v FROM t WHERE (dt > CAST('2020-06-01' AS DATE))
+
+# constructs that SQLite does not support are executed locally
+query II
+EXPLAIN ALTER TABLE s.t ALTER COLUMN v SET NOT NULL
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+query II
+EXPLAIN DROP TABLE s.w CASCADE
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+query II
+EXPLAIN CREATE TEMPORARY TABLE tmp AS SELECT * FROM s.t
+----
+physical_plan	<!REGEX>:(?s).*Preliminary Queries.*

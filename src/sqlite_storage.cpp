@@ -34,6 +34,10 @@ static unique_ptr<Catalog> SQLiteAttach(optional_ptr<StorageExtensionInfo> stora
 	if (context.TryGetCurrentSetting("sqlite_keep_database_open", keep_open) && !keep_open.IsNull()) {
 		options.keep_database_open = BooleanValue::Get(keep_open);
 	}
+	Value remote_pushdown;
+	if (context.TryGetCurrentSetting("sqlite_enable_remote_pushdown", remote_pushdown) && !remote_pushdown.IsNull()) {
+		options.remote_pushdown = BooleanValue::Get(remote_pushdown);
+	}
 	SQLiteDB::VerifyCanAccessLocalFile(context, info.path);
 	return make_uniq<SQLiteCatalog>(db, info.path, std::move(options));
 }

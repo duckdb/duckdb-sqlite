@@ -1,0 +1,173 @@
+# name: test/sql/remote_pushdown/remote_pushdown_cast.test
+# description: Test the translation of casts in the remote pushdown into SQLite
+# group: [remote_pushdown]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_cast.db' AS l (TYPE SQLITE)
+
+statement ok
+SET sqlite_enable_remote_pushdown = true
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_cast.db' AS s (TYPE SQLITE)
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE t(i INTEGER, d DOUBLE, v TEXT, b BLOB, dt DATE, ts TIMESTAMP)')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO t VALUES (1, 1.5, ''42'', x''4142'', ''2020-01-01'', ''2020-01-01 10:00:00.5'')')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO t VALUES (-3, -2.5, '' 7 '', x''00'', ''1999-12-31'', ''1999-12-31 23:59:59'')')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO t VALUES (0, 3.7, ''abc'', x'''', ''2000-02-29'', ''2000-02-29 00:00:00'')')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO t VALUES (2, 1e20, ''true'', NULL, NULL, NULL)')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO t VALUES (NULL, NULL, NULL, NULL, NULL, NULL)')
+
+# the results are the same with and without remote pushdown
+foreach db l s
+
+query IIIIII
+SELECT i, i::DOUBLE, i::VARCHAR, i::BOOLEAN, i::SMALLINT, i::TINYINT FROM {db}.t ORDER BY i
+----
+-3	-3.0	-3	true	-3	-3
+0	0.0	0	false	0	0
+1	1.0	1	true	1	1
+2	2.0	2	true	2	2
+NULL	NULL	NULL	NULL	NULL	NULL
+
+query IIII
+SELECT d, d::BIGINT, d::INTEGER, d::VARCHAR FROM {db}.t WHERE d < 1e10 ORDER BY d
+----
+-2.5	-2	-2	-2.5
+1.5	2	2	1.5
+3.7	4	4	3.7
+
+query II
+SELECT d, d::VARCHAR FROM {db}.t ORDER BY d
+----
+-2.5	-2.5
+1.5	1.5
+3.7	3.7
+1e+20	1e+20
+NULL	NULL
+
+query IIIII
+SELECT v, TRY_CAST(v AS INTEGER), TRY_CAST(v AS DOUBLE), TRY_CAST(v AS BOOLEAN), TRY_CAST(v AS DATE) FROM {db}.t ORDER BY i
+----
+ 7 	7	7.0	NULL	NULL
+abc	NULL	NULL	NULL	NULL
+42	42	42.0	NULL	NULL
+true	NULL	NULL	true	NULL
+NULL	NULL	NULL	NULL	NULL
+
+query IIII
+SELECT i, (i > 0)::VARCHAR, (i > 0)::INTEGER, (i > 0)::DOUBLE FROM {db}.t ORDER BY i
+----
+-3	false	0	0.0
+0	false	0	0.0
+1	true	1	1.0
+2	true	1	1.0
+NULL	NULL	NULL	NULL
+
+query III
+SELECT i, b::VARCHAR, v::BLOB FROM {db}.t ORDER BY i
+----
+-3	\x00	 7 
+0	(empty)	abc
+1	AB	42
+2	NULL	true
+NULL	NULL	NULL
+
+query IIIIII
+SELECT i, dt::VARCHAR, ts::VARCHAR, dt::TIMESTAMP, ts::DATE, CAST(dt AS TIMESTAMP) < ts FROM {db}.t ORDER BY i
+----
+-3	1999-12-31	1999-12-31 23:59:59	1999-12-31 00:00:00	1999-12-31	true
+0	2000-02-29	2000-02-29 00:00:00	2000-02-29 00:00:00	2000-02-29	false
+1	2020-01-01	2020-01-01 10:00:00.5	2020-01-01 00:00:00	2020-01-01	true
+2	NULL	NULL	NULL	NULL	NULL
+NULL	NULL	NULL	NULL	NULL	NULL
+
+query III
+SELECT i, (dt::VARCHAR)::DATE, (ts::VARCHAR || '')::TIMESTAMP FROM {db}.t ORDER BY i
+----
+-3	1999-12-31	1999-12-31 23:59:59
+0	2000-02-29	2000-02-29 00:00:00
+1	2020-01-01	2020-01-01 10:00:00.5
+2	NULL	NULL
+NULL	NULL	NULL
+
+query II
+SELECT i, CAST(i AS VARCHAR) || '-' || CAST(d AS VARCHAR) FROM {db}.t ORDER BY i
+----
+-3	-3--2.5
+0	0-3.7
+1	1-1.5
+2	2-1e+20
+NULL	NULL
+
+query I
+SELECT i FROM {db}.t WHERE v::VARCHAR = '42'
+----
+1
+
+query I
+SELECT i FROM {db}.t WHERE TRY_CAST(v AS INTEGER) > 10
+----
+1
+
+query I
+SELECT sum(TRY_CAST(v AS INTEGER)) FROM {db}.t
+----
+49
+
+endloop
+
+query II
+EXPLAIN SELECT i::DOUBLE, i::VARCHAR, (i > 0)::VARCHAR, dt::TIMESTAMP, ts::DATE FROM s.t
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*CAST\("i" AS DOUBLE\).*CAST\("i" AS TEXT\).*WHEN 1 THEN 'true' WHEN 0 THEN 'false'.*\("dt" \|\| ' 00:00:00'\).*substr\("ts", 1, 10\).*
+
+# other casts use DuckDB's cast semantics
+query II
+EXPLAIN SELECT d::BIGINT, d::VARCHAR, TRY_CAST(v AS INTEGER) FROM s.t
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*duckdb_cast\("d", 'DOUBLE', 'BIGINT'\).*duckdb_cast\("d", 'DOUBLE', 'VARCHAR'\).*duckdb_try_cast\("v", 'VARCHAR', 'INTEGER'\).*
+
+# invalid casts raise an error in both
+foreach db l s
+
+statement error
+SELECT v::INTEGER FROM {db}.t ORDER BY i
+----
+Could not convert string
+
+statement error
+SELECT i::UTINYINT FROM {db}.t ORDER BY i
+----
+out of range
+
+endloop
+
+# casts to types without a representation in SQLite are executed locally
+query II
+EXPLAIN SELECT d::DECIMAL(10, 2) FROM s.t
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+query II
+EXPLAIN SELECT d::FLOAT FROM s.t
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+query II
+EXPLAIN SELECT v::INTERVAL FROM s.t
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
