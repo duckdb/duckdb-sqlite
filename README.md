@@ -197,6 +197,7 @@ Statements without a result (e.g. DDL) return the number of changed rows. The fu
 * `preliminary_queries` - statements that are executed (in the same transaction) before the query
 * `return_changed_rows` / `suppress_output` - report the number of changed rows like a DuckDB DML statement does / report no result, like a DDL statement
 * `clear_catalog_cache` - remove the cached catalog entries of the transaction after executing the statement (e.g. after DDL)
+* `modifies_database` - the query writes to the database (e.g. `INSERT ... RETURNING` with `column_types`). Statements are checked against the transaction like DuckDB statements (e.g. a read-only transaction cannot write) - whether a statement writes is determined by SQLite when the query is prepared when it is bound, statements without a result are assumed to write
 
 `EXPLAIN` shows the SQL of the query.
 

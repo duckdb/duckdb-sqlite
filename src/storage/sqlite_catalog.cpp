@@ -338,6 +338,12 @@ unique_ptr<TableRef> SQLiteCatalog::RemoteExecute(ClientContext &context, unique
 	args.push_back(ConstantExpression::FromValue(Value(GetName().GetIdentifierName())));
 	args.push_back(ConstantExpression::FromValue(Value(query.sql)));
 	bool changed_rows = SQLiteIsDMLWithoutReturning(*node);
+	bool is_dml = node->type == QueryNodeType::UPDATE_QUERY_NODE || node->type == QueryNodeType::DELETE_QUERY_NODE ||
+	              node->type == QueryNodeType::INSERT_QUERY_NODE;
+	if (is_dml && !changed_rows) {
+		// a DML statement with RETURNING - which sqlite_query cannot tell from its result
+		args.push_back(SQLiteNamedParameter("modifies_database", Value::BOOLEAN(true)));
+	}
 	if (changed_rows) {
 		// the statement yields the number of changed rows
 		args.push_back(SQLiteNamedParameter("return_changed_rows", Value::BOOLEAN(true)));

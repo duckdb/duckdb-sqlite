@@ -4,6 +4,7 @@
 #include "sqlite_scanner.hpp"
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/main/attached_database.hpp"
+#include "duckdb/planner/binder.hpp"
 #include "storage/sqlite_catalog.hpp"
 #include "storage/sqlite_table_entry.hpp"
 #include "storage/sqlite_transaction.hpp"
@@ -144,6 +145,8 @@ static unique_ptr<FunctionData> SQLiteQueryBind(ClientContext &context, TableFun
 
 	auto &con = transaction.GetDB();
 	bool suppress_output = SQLiteQueryFlag(input, "suppress_output");
+	// whether the statement writes to the database - statements without a result are assumed to write
+	bool modifies_database = SQLiteQueryFlag(input, "modifies_database") || !result->preliminary_queries.empty();
 	if (suppress_output) {
 		// the statement replaces a DuckDB statement without a result (e.g. DDL) - it is executed as a command
 		if (!column_types.empty()) {
@@ -163,6 +166,9 @@ static unique_ptr<FunctionData> SQLiteQueryBind(ClientContext &context, TableFun
 		if (!stmt.stmt) {
 			throw BinderException("Failed to prepare query \"%s\"", sql);
 		}
+		if (!sqlite3_stmt_readonly(stmt.stmt)) {
+			modifies_database = true;
+		}
 		for (idx_t c = 0; c < stmt.GetColumnCount(); c++) {
 			names.emplace_back(Identifier(stmt.GetName(c)));
 		}
@@ -177,11 +183,24 @@ static unique_ptr<FunctionData> SQLiteQueryBind(ClientContext &context, TableFun
 		return_types.emplace_back(LogicalType::BIGINT);
 		names.emplace_back("rowcount");
 		result->command_only = true;
+		modifies_database = true;
 		if (suppress_output) {
 			input.table_function.call_return_type = StatementReturnType::NOTHING;
 		} else if (SQLiteQueryFlag(input, "return_changed_rows")) {
 			// the statement replaces a DuckDB DML statement - report the changed rows like DuckDB does
 			input.table_function.call_return_type = StatementReturnType::CHANGED_ROWS;
+		}
+	}
+	if (input.binder) {
+		// let DuckDB check the transaction (e.g. that a read-only transaction does not write), and rebind prepared
+		// statements when the catalog changed
+		auto &properties = input.binder->GetStatementProperties();
+		properties.RegisterDBRead(sqlite_catalog, context);
+		if (modifies_database) {
+			// statements that clear the catalog cache are DDL
+			DatabaseModificationType modification = result->clear_catalog_cache ? DatabaseModificationType::ALTER_TABLE
+			                                                                    : DatabaseModificationType::UPDATE_DATA;
+			properties.RegisterDBModify(sqlite_catalog, context, modification);
 		}
 	}
 	result->types = return_types;
@@ -208,6 +227,7 @@ static FunctionSignature SQLiteQuerySignature() {
 		    options.Add("return_changed_rows", LogicalType::BOOLEAN);
 		    options.Add("suppress_output", LogicalType::BOOLEAN);
 		    options.Add("clear_catalog_cache", LogicalType::BOOLEAN);
+		    options.Add("modifies_database", LogicalType::BOOLEAN);
 	    });
 	return signature;
 }

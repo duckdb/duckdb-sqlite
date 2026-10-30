@@ -93,7 +93,7 @@ DETACH s
 statement error
 EXECUTE p2
 ----
-Invalid Input Error: Attached SQLite database not found in the specified client session, name: "s"
+Binder Error: Failed to find attached database "s" referenced in sqlite_query
 
 statement ok
 ATTACH '{TEST_DIR}/detach_prepared.db' AS s (TYPE SQLITE)

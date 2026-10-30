@@ -1,0 +1,206 @@
+# name: test/sql/remote_pushdown/remote_pushdown_transactions.test
+# description: Pushed down statements are checked against the transaction like the statements they replace
+# group: [remote_pushdown]
+
+require sqlite_scanner
+
+statement ok
+SET sqlite_enable_remote_pushdown = true
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_transactions.db' AS s (TYPE SQLITE)
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_transactions2.db' AS s2 (TYPE SQLITE)
+
+statement ok
+CREATE TABLE s.t(i INTEGER)
+
+statement ok
+CREATE TABLE s2.t(i INTEGER)
+
+statement ok
+INSERT INTO s.t SELECT range FROM range(3)
+
+# a read-only transaction cannot write
+statement ok
+BEGIN TRANSACTION READ ONLY
+
+query I
+SELECT count(*) FROM s.t WHERE i > 0
+----
+2
+
+statement error
+INSERT INTO s.t SELECT 42
+----
+transaction is launched in read-only mode
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN TRANSACTION READ ONLY
+
+statement error
+INSERT INTO s.t SELECT 42 RETURNING i
+----
+transaction is launched in read-only mode
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN TRANSACTION READ ONLY
+
+statement error
+UPDATE s.t SET i = i + 1 WHERE i > 0
+----
+transaction is launched in read-only mode
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN TRANSACTION READ ONLY
+
+statement error
+UPDATE s.t SET i = i + 1 WHERE i > 0 RETURNING i
+----
+transaction is launched in read-only mode
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN TRANSACTION READ ONLY
+
+statement error
+DELETE FROM s.t WHERE i > 0
+----
+transaction is launched in read-only mode
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN TRANSACTION READ ONLY
+
+statement error
+DELETE FROM s.t WHERE i > 0 RETURNING i
+----
+transaction is launched in read-only mode
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN TRANSACTION READ ONLY
+
+statement error
+CREATE TABLE s.t2 AS SELECT * FROM s.t
+----
+transaction is launched in read-only mode
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN TRANSACTION READ ONLY
+
+statement error
+CREATE VIEW s.v AS SELECT * FROM s.t
+----
+transaction is launched in read-only mode
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN TRANSACTION READ ONLY
+
+statement error
+DROP TABLE s.t
+----
+transaction is launched in read-only mode
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN TRANSACTION READ ONLY
+
+statement error
+ALTER TABLE s.t ADD COLUMN j INTEGER
+----
+transaction is launched in read-only mode
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN TRANSACTION READ ONLY
+
+statement error
+FROM sqlite_query(s, 'INSERT INTO t VALUES (42)')
+----
+transaction is launched in read-only mode
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN TRANSACTION READ ONLY
+
+statement error
+FROM sqlite_query(s, 'INSERT INTO t VALUES (42) RETURNING i')
+----
+transaction is launched in read-only mode
+
+statement ok
+ROLLBACK
+
+
+query I
+SELECT count(*) FROM s.t
+----
+3
+
+# a transaction can only write to a single database
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO s.t SELECT 42
+
+statement error
+INSERT INTO s2.t SELECT 42
+----
+a single transaction can only write to a single attached database
+
+statement ok
+ROLLBACK
+
+query I
+SELECT count(*) FROM s.t
+----
+3
+
+# prepared statements are rebound after DDL
+statement ok
+PREPARE p AS SELECT * FROM s.t WHERE i > 0 ORDER BY i
+
+query I
+EXECUTE p
+----
+1
+2
+
+statement ok
+ALTER TABLE s.t ADD COLUMN j INTEGER
+
+query II
+EXECUTE p
+----
+1	NULL
+2	NULL
