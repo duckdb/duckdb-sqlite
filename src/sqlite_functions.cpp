@@ -1040,10 +1040,10 @@ static void SQLiteRegexpExtractFunction(sqlite3_context *context, int argc, sqli
 			return;
 		}
 		duckdb_re2::StringPiece input(str);
-		duckdb_re2::StringPiece submatch[10];
 		auto nsubmatch = NumericCast<int>(group_index + 1);
+		vector<duckdb_re2::StringPiece> submatch(NumericCast<idx_t>(nsubmatch));
 		string result;
-		if (re.Match(input, 0, input.size(), duckdb_re2::RE2::UNANCHORED, submatch, nsubmatch)) {
+		if (re.Match(input, 0, input.size(), duckdb_re2::RE2::UNANCHORED, submatch.data(), nsubmatch)) {
 			auto &group = submatch[group_index];
 			regexp_util::VerifyUTF8Result(group.data(), group.size());
 			result = string(group.data(), group.size());
@@ -1224,6 +1224,53 @@ static void SQLiteHashFunction(sqlite3_context *context, int argc, sqlite3_value
 //===--------------------------------------------------------------------===//
 // Aggregates
 //===--------------------------------------------------------------------===//
+//! Exceptions must not escape into SQLite - the callbacks of the aggregates are wrapped with these
+template <void (*STEP)(sqlite3_context *, int, sqlite3_value **)>
+static void SQLiteSafeStep(sqlite3_context *context, int argc, sqlite3_value **argv) {
+	try {
+		STEP(context, argc, argv);
+	} catch (std::bad_alloc &) {
+		sqlite3_result_error_nomem(context);
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
+		sqlite3_result_error(context, error.Message().c_str(), -1);
+	}
+}
+
+template <void (*FINAL)(sqlite3_context *)>
+static void SQLiteSafeFinal(sqlite3_context *context) {
+	try {
+		FINAL(context);
+	} catch (std::bad_alloc &) {
+		sqlite3_result_error_nomem(context);
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
+		sqlite3_result_error(context, error.Message().c_str(), -1);
+	}
+}
+
+//! Adds a copy of a value to the values an aggregate keeps - sqlite3_value_dup returns NULL when it runs out of memory
+static void SQLiteAppendValue(vector<sqlite3_value *> &values, sqlite3_value *value) {
+	auto copy = sqlite3_value_dup(value);
+	if (!copy) {
+		throw std::bad_alloc();
+	}
+	try {
+		values.push_back(copy);
+	} catch (...) {
+		sqlite3_value_free(copy);
+		throw;
+	}
+}
+
+static sqlite3_value *SQLiteDupValue(sqlite3_value *value) {
+	auto result = sqlite3_value_dup(value);
+	if (!result) {
+		throw std::bad_alloc();
+	}
+	return result;
+}
+
 //! The value of a scalar subquery - DuckDB raises an error when the subquery returns more than one row
 struct SQLiteScalarSubqueryState {
 	bool has_value;
@@ -1244,8 +1291,8 @@ static void SQLiteScalarSubqueryStep(sqlite3_context *context, int argc, sqlite3
 		                     -1);
 		return;
 	}
+	state->value = SQLiteDupValue(argv[0]);
 	state->has_value = true;
-	state->value = sqlite3_value_dup(argv[0]);
 }
 
 static void SQLiteScalarSubqueryFinal(sqlite3_context *context) {
@@ -1554,6 +1601,17 @@ static void SQLiteFreePointerState(sqlite3_context *context) {
 	}
 }
 
+//! Frees the state of an aggregate when its final function returns (or throws)
+template <class T>
+struct SQLiteFreePointerStateGuard {
+	explicit SQLiteFreePointerStateGuard(sqlite3_context *context_p) : context(context_p) {
+	}
+	~SQLiteFreePointerStateGuard() {
+		SQLiteFreePointerState<T>(context);
+	}
+	sqlite3_context *context;
+};
+
 //! arg_min / arg_max - the argument of the row with the minimum / maximum value, rows where either is NULL are ignored
 struct SQLiteArgState {
 	~SQLiteArgState() {
@@ -1586,18 +1644,20 @@ static void SQLiteArgStep(sqlite3_context *context, int argc, sqlite3_value **ar
 		sqlite3_value_free(state->arg);
 		sqlite3_value_free(state->val);
 	}
-	state->arg = sqlite3_value_dup(argv[0]);
-	state->val = sqlite3_value_dup(argv[1]);
+	state->arg = nullptr;
+	state->val = nullptr;
+	state->arg = SQLiteDupValue(argv[0]);
+	state->val = SQLiteDupValue(argv[1]);
 }
 
 static void SQLiteArgFinal(sqlite3_context *context) {
+	SQLiteFreePointerStateGuard<SQLiteArgState> guard(context);
 	auto state = SQLiteGetPointerState<SQLiteArgState>(context, false);
 	if (!state || !state->arg) {
 		sqlite3_result_null(context);
 	} else {
 		sqlite3_result_value(context, state->arg);
 	}
-	SQLiteFreePointerState<SQLiteArgState>(context);
 }
 
 //! quantile_cont / quantile_disc - with the interpolation of DuckDB
@@ -1620,16 +1680,20 @@ static void SQLiteQuantileStep(sqlite3_context *context, int argc, sqlite3_value
 		sqlite3_result_error_nomem(context);
 		return;
 	}
-	state->quantile = SQLiteDoubleArgument(argv[1]);
-	state->values.push_back(sqlite3_value_dup(argv[0]));
+	auto quantile = SQLiteDoubleArgument(argv[1]);
+	if (sqlite3_value_type(argv[1]) == SQLITE_NULL || !(quantile >= 0 && quantile <= 1)) {
+		throw InvalidInputException("The quantile must be between 0 and 1");
+	}
+	state->quantile = quantile;
+	SQLiteAppendValue(state->values, argv[0]);
 }
 
 template <bool DISCRETE>
 static void SQLiteQuantileFinal(sqlite3_context *context) {
+	SQLiteFreePointerStateGuard<SQLiteQuantileState> guard(context);
 	auto state = SQLiteGetPointerState<SQLiteQuantileState>(context, false);
 	if (!state || state->values.empty()) {
 		sqlite3_result_null(context);
-		SQLiteFreePointerState<SQLiteQuantileState>(context);
 		return;
 	}
 	auto &values = state->values;
@@ -1651,9 +1715,8 @@ static void SQLiteQuantileFinal(sqlite3_context *context) {
 		if (frn != crn) {
 			result = InterpolateOperator::Operation<double>(lo, rn - double(frn), SQLiteDoubleArgument(values[crn]));
 		}
-		SQLiteRunFunction(context, [&]() { SQLiteSetDouble(context, result); });
+		SQLiteSetDouble(context, result);
 	}
-	SQLiteFreePointerState<SQLiteQuantileState>(context);
 }
 
 //! duckdb_string_agg(value, separator, order, key...) - string_agg with an ORDER BY, the order has two characters per
@@ -1691,19 +1754,20 @@ static void SQLiteOrderedStringAggStep(sqlite3_context *context, int argc, sqlit
 	}
 	state->separator = SQLiteTextArgument(argv[1]);
 	state->order = SQLiteTextArgument(argv[2]);
-	SQLiteOrderedStringAggState::Row row;
+	// the row is added before its keys are copied - the state frees them if a copy fails
+	state->rows.emplace_back();
+	auto &row = state->rows.back();
 	row.value = SQLiteTextArgument(argv[0]);
 	for (int i = 3; i < argc; i++) {
-		row.keys.push_back(sqlite3_value_dup(argv[i]));
+		SQLiteAppendValue(row.keys, argv[i]);
 	}
-	state->rows.push_back(std::move(row));
 }
 
 static void SQLiteOrderedStringAggFinal(sqlite3_context *context) {
+	SQLiteFreePointerStateGuard<SQLiteOrderedStringAggState> guard(context);
 	auto state = SQLiteGetPointerState<SQLiteOrderedStringAggState>(context, false);
 	if (!state || state->rows.empty()) {
 		sqlite3_result_null(context);
-		SQLiteFreePointerState<SQLiteOrderedStringAggState>(context);
 		return;
 	}
 	auto &order = state->order;
@@ -1735,7 +1799,6 @@ static void SQLiteOrderedStringAggFinal(sqlite3_context *context) {
 		result += state->rows[i].value;
 	}
 	SQLiteSetText(context, result.c_str(), result.size());
-	SQLiteFreePointerState<SQLiteOrderedStringAggState>(context);
 }
 
 //===--------------------------------------------------------------------===//
@@ -1815,20 +1878,26 @@ void SQLiteFunctions::Register(sqlite3 *db) {
 		void (*final)(sqlite3_context *);
 	};
 	static const AggregateFunctionDefinition AGGREGATE_FUNCTIONS[] = {
-	    {"duckdb_scalar_subquery", 1, SQLiteScalarSubqueryStep, SQLiteScalarSubqueryFinal},
-	    {"duckdb_var_samp", 1, SQLiteVarianceStep, SQLiteVarianceFinal<SQLiteVarianceKind::VAR_SAMP>},
-	    {"duckdb_var_pop", 1, SQLiteVarianceStep, SQLiteVarianceFinal<SQLiteVarianceKind::VAR_POP>},
-	    {"duckdb_stddev_samp", 1, SQLiteVarianceStep, SQLiteVarianceFinal<SQLiteVarianceKind::STDDEV_SAMP>},
-	    {"duckdb_stddev_pop", 1, SQLiteVarianceStep, SQLiteVarianceFinal<SQLiteVarianceKind::STDDEV_POP>},
-	    {"duckdb_product", 1, SQLiteProductStep, SQLiteProductFinal},
-	    {"duckdb_bit_and", 1, SQLiteBitStep<SQLiteBitKind::AND>, SQLiteBitFinal},
-	    {"duckdb_bit_or", 1, SQLiteBitStep<SQLiteBitKind::OR>, SQLiteBitFinal},
-	    {"duckdb_bit_xor", 1, SQLiteBitStep<SQLiteBitKind::XOR>, SQLiteBitFinal},
-	    {"duckdb_arg_min", 2, SQLiteArgStep<false>, SQLiteArgFinal},
-	    {"duckdb_arg_max", 2, SQLiteArgStep<true>, SQLiteArgFinal},
-	    {"duckdb_quantile_cont", 2, SQLiteQuantileStep, SQLiteQuantileFinal<false>},
-	    {"duckdb_quantile_disc", 2, SQLiteQuantileStep, SQLiteQuantileFinal<true>},
-	    {"duckdb_string_agg", -1, SQLiteOrderedStringAggStep, SQLiteOrderedStringAggFinal},
+	    {"duckdb_scalar_subquery", 1, SQLiteSafeStep<SQLiteScalarSubqueryStep>,
+	     SQLiteSafeFinal<SQLiteScalarSubqueryFinal>},
+	    {"duckdb_var_samp", 1, SQLiteSafeStep<SQLiteVarianceStep>,
+	     SQLiteSafeFinal<SQLiteVarianceFinal<SQLiteVarianceKind::VAR_SAMP>>},
+	    {"duckdb_var_pop", 1, SQLiteSafeStep<SQLiteVarianceStep>,
+	     SQLiteSafeFinal<SQLiteVarianceFinal<SQLiteVarianceKind::VAR_POP>>},
+	    {"duckdb_stddev_samp", 1, SQLiteSafeStep<SQLiteVarianceStep>,
+	     SQLiteSafeFinal<SQLiteVarianceFinal<SQLiteVarianceKind::STDDEV_SAMP>>},
+	    {"duckdb_stddev_pop", 1, SQLiteSafeStep<SQLiteVarianceStep>,
+	     SQLiteSafeFinal<SQLiteVarianceFinal<SQLiteVarianceKind::STDDEV_POP>>},
+	    {"duckdb_product", 1, SQLiteSafeStep<SQLiteProductStep>, SQLiteSafeFinal<SQLiteProductFinal>},
+	    {"duckdb_bit_and", 1, SQLiteSafeStep<SQLiteBitStep<SQLiteBitKind::AND>>, SQLiteSafeFinal<SQLiteBitFinal>},
+	    {"duckdb_bit_or", 1, SQLiteSafeStep<SQLiteBitStep<SQLiteBitKind::OR>>, SQLiteSafeFinal<SQLiteBitFinal>},
+	    {"duckdb_bit_xor", 1, SQLiteSafeStep<SQLiteBitStep<SQLiteBitKind::XOR>>, SQLiteSafeFinal<SQLiteBitFinal>},
+	    {"duckdb_arg_min", 2, SQLiteSafeStep<SQLiteArgStep<false>>, SQLiteSafeFinal<SQLiteArgFinal>},
+	    {"duckdb_arg_max", 2, SQLiteSafeStep<SQLiteArgStep<true>>, SQLiteSafeFinal<SQLiteArgFinal>},
+	    {"duckdb_quantile_cont", 2, SQLiteSafeStep<SQLiteQuantileStep>, SQLiteSafeFinal<SQLiteQuantileFinal<false>>},
+	    {"duckdb_quantile_disc", 2, SQLiteSafeStep<SQLiteQuantileStep>, SQLiteSafeFinal<SQLiteQuantileFinal<true>>},
+	    {"duckdb_string_agg", -1, SQLiteSafeStep<SQLiteOrderedStringAggStep>,
+	     SQLiteSafeFinal<SQLiteOrderedStringAggFinal>},
 	};
 	for (auto &function : AGGREGATE_FUNCTIONS) {
 		SQLiteUtils::Check(sqlite3_create_function_v2(db, function.name, function.argc, flags, nullptr, nullptr,
@@ -1843,11 +1912,12 @@ void SQLiteFunctions::Register(sqlite3 *db) {
 		void (*inverse)(sqlite3_context *, int, sqlite3_value **);
 	};
 	static const WindowFunctionDefinition WINDOW_FUNCTIONS[] = {
-	    {"duckdb_avg", SQLiteAvgStep<false>, SQLiteAvgValue, SQLiteAvgValue, SQLiteAvgStep<true>},
-	    {"duckdb_frame_sum", SQLiteFrameStep<false>, SQLiteFrameFinal<false>, SQLiteFrameValue<false>,
-	     SQLiteFrameStep<true>},
-	    {"duckdb_frame_avg", SQLiteFrameStep<false>, SQLiteFrameFinal<true>, SQLiteFrameValue<true>,
-	     SQLiteFrameStep<true>},
+	    {"duckdb_avg", SQLiteSafeStep<SQLiteAvgStep<false>>, SQLiteSafeFinal<SQLiteAvgValue>,
+	     SQLiteSafeFinal<SQLiteAvgValue>, SQLiteSafeStep<SQLiteAvgStep<true>>},
+	    {"duckdb_frame_sum", SQLiteSafeStep<SQLiteFrameStep<false>>, SQLiteSafeFinal<SQLiteFrameFinal<false>>,
+	     SQLiteSafeFinal<SQLiteFrameValue<false>>, SQLiteSafeStep<SQLiteFrameStep<true>>},
+	    {"duckdb_frame_avg", SQLiteSafeStep<SQLiteFrameStep<false>>, SQLiteSafeFinal<SQLiteFrameFinal<true>>,
+	     SQLiteSafeFinal<SQLiteFrameValue<true>>, SQLiteSafeStep<SQLiteFrameStep<true>>},
 	};
 	for (auto &function : WINDOW_FUNCTIONS) {
 		SQLiteUtils::Check(sqlite3_create_window_function(db, function.name, 1, flags, nullptr, function.step,
