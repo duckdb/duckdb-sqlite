@@ -5,6 +5,12 @@
 require sqlite_scanner
 
 statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_functions_direct.db' AS s (TYPE SQLITE)
+
+statement ok
+DETACH s
+
+statement ok
 SET sqlite_enable_remote_pushdown = true
 
 statement ok

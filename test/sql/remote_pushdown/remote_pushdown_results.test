@@ -16,8 +16,9 @@ ATTACH '{TEST_DIR}/remote_pushdown_results.db' AS s (TYPE SQLITE)
 statement ok
 FROM sqlite_query(l, 'CREATE TABLE t(id INTEGER PRIMARY KEY, r REAL, s TEXT, i INTEGER)')
 
+# the doubles are bound (SQLite does not read every double literal exactly on every platform)
 statement ok
-FROM sqlite_query(l, 'INSERT INTO t VALUES (1, 1e-6, ''a'', 1), (2, 0.1, ''B'', 2), (3, 2.5, ''c'', 3), (4, 1e-300, ''A'', 4), (5, 123456.789, ''b'', 5), (6, 0.8, ''C'', 6), (7, 1.0/3, NULL, 7), (8, 2.5e-310, ''d'', 8), (9, 1e22, ''D'', 9), (10, 0.3, ''e'', 10)')
+INSERT INTO l.t VALUES (1, 1e-6, 'a', 1), (2, 0.1, 'B', 2), (3, 2.5, 'c', 3), (4, 1e-300, 'A', 4), (5, 123456.789, 'b', 5), (6, 0.8, 'C', 6), (7, 1.0 / 3, NULL, 7), (8, 2.5e-310, 'd', 8), (9, 1e22, 'D', 9), (10, 0.3, 'e', 10)
 
 statement ok
 FROM sqlite_query(l, 'CREATE TABLE u(x INTEGER)')
@@ -42,7 +43,7 @@ SELECT count(*) FROM {db}.t WHERE r = 0.1
 query I
 SELECT count(*) FROM {db}.t WHERE r = 1e-300
 ----
-0
+1
 
 query I
 SELECT count(*) FROM {db}.t WHERE r = 123456.789
