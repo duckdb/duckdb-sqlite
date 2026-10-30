@@ -28,12 +28,12 @@ FROM sqlite_query('s', 'SELECT duckdb_regexp_extract(''abcdefghijklm'', ''(a)(b)
 foreach quantile -0.5 1.5 NULL
 
 statement error
-FROM sqlite_query('s', 'SELECT duckdb_quantile_disc(i, ${quantile}) FROM t')
+FROM sqlite_query('s', 'SELECT duckdb_quantile_disc(i, {quantile}) FROM t')
 ----
 The quantile must be between 0 and 1
 
 statement error
-FROM sqlite_query('s', 'SELECT duckdb_quantile_cont(i, ${quantile}) FROM t')
+FROM sqlite_query('s', 'SELECT duckdb_quantile_cont(i, {quantile}) FROM t')
 ----
 The quantile must be between 0 and 1
 
