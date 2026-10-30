@@ -171,3 +171,31 @@ rowcount	BIGINT
 
 statement ok
 CALL sqlite_query(s, 'DROP TABLE query_dml_test')
+
+# the parameters of statements without a result are bound
+statement ok
+CALL sqlite_query(s, 'CREATE TABLE query_params_test(i INTEGER PRIMARY KEY, v TEXT NOT NULL)')
+
+query I
+FROM sqlite_query(s, 'INSERT INTO query_params_test VALUES (?, ?), (?, ?)', params=row(1::BIGINT, 'a', 2::BIGINT, 'b'))
+----
+2
+
+query I
+FROM sqlite_query(s, 'UPDATE query_params_test SET v = ? WHERE i = ?', params=row('z', 2::BIGINT))
+----
+1
+
+query II
+SELECT * FROM s.query_params_test ORDER BY i
+----
+1	a
+2	z
+
+statement error
+FROM sqlite_query(s, 'INSERT INTO query_params_test VALUES (?, ?)', params=row(3::BIGINT, NULL))
+----
+NOT NULL constraint failed
+
+statement ok
+CALL sqlite_query(s, 'DROP TABLE query_params_test')
