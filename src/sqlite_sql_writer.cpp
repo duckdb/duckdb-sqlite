@@ -1,6 +1,7 @@
 #include "sqlite_sql_writer.hpp"
 
 #include "duckdb.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/entry_lookup_info.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -186,14 +187,132 @@ void SQLiteSQLWriter::CollectCTENames(QueryNode &node, identifier_set_t &cte_nam
 	    node, [&](unique_ptr<ParsedExpression> &child) { SQLiteCollectCTENamesExpr(*child, cte_names); });
 }
 
-static void SQLiteQualifyTablesExpr(ParsedExpression &expr, const Identifier &catalog_name,
-                                    const identifier_set_t &cte_names) {
+//! Calls the callback for every base table reference of a query, with the names of the CTEs that are visible where it
+//! is (a reference with such a name refers to the CTE)
+using SQLiteBaseTableCallback = std::function<void(BaseTableRef &ref, const identifier_set_t &cte_scope)>;
+
+static void SQLiteWalkBaseTables(QueryNode &node, const identifier_set_t &outer_scope,
+                                 const SQLiteBaseTableCallback &callback);
+
+static void SQLiteWalkBaseTables(ParsedExpression &expr, const identifier_set_t &cte_scope,
+                                 const SQLiteBaseTableCallback &callback) {
 	if (expr.GetExpressionClass() == ExpressionClass::SUBQUERY) {
-		SQLiteSQLWriter::QualifyTables(*expr.Cast<SubqueryExpression>().SubqueryMutable()->node, catalog_name,
-		                               cte_names);
+		SQLiteWalkBaseTables(*expr.Cast<SubqueryExpression>().SubqueryMutable()->node, cte_scope, callback);
 	}
 	ParsedExpressionIterator::EnumerateChildren(
-	    expr, [&](ParsedExpression &child) { SQLiteQualifyTablesExpr(child, catalog_name, cte_names); });
+	    expr, [&](ParsedExpression &child) { SQLiteWalkBaseTables(child, cte_scope, callback); });
+}
+
+static void SQLiteWalkBaseTables(TableRef &ref, const identifier_set_t &cte_scope,
+                                 const SQLiteBaseTableCallback &callback) {
+	switch (ref.type) {
+	case TableReferenceType::BASE_TABLE:
+		callback(ref.Cast<BaseTableRef>(), cte_scope);
+		break;
+	case TableReferenceType::JOIN: {
+		auto &join = ref.Cast<JoinRef>();
+		SQLiteWalkBaseTables(*join.left, cte_scope, callback);
+		SQLiteWalkBaseTables(*join.right, cte_scope, callback);
+		if (join.condition) {
+			SQLiteWalkBaseTables(*join.condition, cte_scope, callback);
+		}
+		break;
+	}
+	case TableReferenceType::SUBQUERY:
+		SQLiteWalkBaseTables(*ref.Cast<SubqueryRef>().subquery->node, cte_scope, callback);
+		break;
+	default:
+		ParsedExpressionIterator::EnumerateTableRefChildren(
+		    ref, [&](unique_ptr<ParsedExpression> &child) { SQLiteWalkBaseTables(*child, cte_scope, callback); },
+		    [&](TableRef &child) {
+			    if (child.type == TableReferenceType::BASE_TABLE) {
+				    callback(child.Cast<BaseTableRef>(), cte_scope);
+			    }
+		    });
+		break;
+	}
+}
+
+static void SQLiteWalkBaseTables(QueryNode &node, const identifier_set_t &outer_scope,
+                                 const SQLiteBaseTableCallback &callback) {
+	// a CTE sees the CTEs that are defined before it (and itself, if it is recursive) - the query sees all of them
+	auto cte_scope = outer_scope;
+	for (auto &cte : node.cte_map.map) {
+		if (cte.second->query_node) {
+			auto definition_scope = cte_scope;
+			if (cte.second->query_node->type == QueryNodeType::RECURSIVE_CTE_NODE) {
+				definition_scope.insert(cte.first);
+			}
+			SQLiteWalkBaseTables(*cte.second->query_node, definition_scope, callback);
+		}
+		cte_scope.insert(cte.first);
+	}
+	auto walk_expr = [&](unique_ptr<ParsedExpression> &expr) {
+		if (expr) {
+			SQLiteWalkBaseTables(*expr, cte_scope, callback);
+		}
+	};
+	auto walk_ref = [&](unique_ptr<TableRef> &ref) {
+		if (ref) {
+			SQLiteWalkBaseTables(*ref, cte_scope, callback);
+		}
+	};
+	switch (node.type) {
+	case QueryNodeType::SELECT_NODE: {
+		auto &select = node.Cast<SelectNode>();
+		for (auto &expr : select.select_list) {
+			walk_expr(expr);
+		}
+		walk_ref(select.from_table);
+		walk_expr(select.where_clause);
+		for (auto &expr : select.groups.group_expressions) {
+			walk_expr(expr);
+		}
+		walk_expr(select.having);
+		walk_expr(select.qualify);
+		break;
+	}
+	case QueryNodeType::SET_OPERATION_NODE:
+		for (auto &child : node.Cast<SetOperationNode>().children) {
+			SQLiteWalkBaseTables(*child, cte_scope, callback);
+		}
+		break;
+	case QueryNodeType::RECURSIVE_CTE_NODE: {
+		auto &recursive = node.Cast<RecursiveCTENode>();
+		SQLiteWalkBaseTables(*recursive.left, cte_scope, callback);
+		SQLiteWalkBaseTables(*recursive.right, cte_scope, callback);
+		break;
+	}
+	case QueryNodeType::INSERT_QUERY_NODE: {
+		auto &insert = node.Cast<InsertQueryNode>();
+		if (insert.select_statement) {
+			SQLiteWalkBaseTables(*insert.select_statement->node, cte_scope, callback);
+		}
+		walk_ref(insert.table_ref);
+		for (auto &expr : insert.returning_list) {
+			walk_expr(expr);
+		}
+		if (insert.on_conflict_info) {
+			if (insert.on_conflict_info->set_info) {
+				for (auto &expr : insert.on_conflict_info->set_info->expressions) {
+					walk_expr(expr);
+				}
+				walk_expr(insert.on_conflict_info->set_info->condition);
+			}
+			walk_expr(insert.on_conflict_info->condition);
+		}
+		break;
+	}
+	default:
+		// UPDATE / DELETE (which cannot have nested WITH clauses)
+		ParsedExpressionIterator::EnumerateQueryNodeChildren(node, walk_expr, [&](TableRef &ref) {
+			if (ref.type == TableReferenceType::BASE_TABLE) {
+				callback(ref.Cast<BaseTableRef>(), cte_scope);
+			}
+		});
+		return;
+	}
+	ParsedExpressionIterator::EnumerateQueryNodeModifiers(node, walk_expr);
 }
 
 void SQLiteSQLWriter::QualifyTables(QueryNode &node, const Identifier &catalog_name,
@@ -211,27 +330,21 @@ void SQLiteSQLWriter::QualifyTables(QueryNode &node, const Identifier &catalog_n
 			insert.table_ref->Cast<BaseTableRef>().SetQualifiedName(insert.qualified_name);
 		}
 	}
-	ParsedExpressionIterator::EnumerateQueryNodeChildren(
-	    node, [&](unique_ptr<ParsedExpression> &child) { SQLiteQualifyTablesExpr(*child, catalog_name, cte_names); },
-	    [&](TableRef &ref) {
-		    if (ref.type != TableReferenceType::BASE_TABLE) {
-			    return;
-		    }
-		    auto &base = ref.Cast<BaseTableRef>();
-		    auto &name = base.GetQualifiedName();
-		    if (name.Path().size() == 1 && cte_names.count(name.Name()) > 0) {
-			    // (possibly) a CTE reference
-			    return;
-		    }
-		    if (name.Path().size() > 2) {
-			    return;
-		    }
-		    vector<Identifier> schema_path;
-		    if (!name.Schema().empty()) {
-			    schema_path.push_back(name.Schema());
-		    }
-		    base.SetQualifiedName(QualifiedName::FromCatalogSchema(catalog_name, std::move(schema_path), name.Name()));
-	    });
+	SQLiteWalkBaseTables(node, cte_names, [&](BaseTableRef &base, const identifier_set_t &cte_scope) {
+		auto &name = base.GetQualifiedName();
+		if (name.Path().size() == 1 && cte_scope.count(name.Name()) > 0) {
+			// a reference to a CTE
+			return;
+		}
+		if (name.Path().size() > 2) {
+			return;
+		}
+		vector<Identifier> schema_path;
+		if (!name.Schema().empty()) {
+			schema_path.push_back(name.Schema());
+		}
+		base.SetQualifiedName(QualifiedName::FromCatalogSchema(catalog_name, std::move(schema_path), name.Name()));
+	});
 }
 
 optional_ptr<SQLiteTableEntry> SQLiteSQLWriter::LookupTable(const BaseTableRef &ref) {
@@ -417,9 +530,7 @@ LogicalType SQLiteSQLWriter::InferType(const ParsedExpression &expr) {
 			probe->cte_map.map.insert(cte.first, cte.second->Copy());
 		}
 	}
-	identifier_set_t cte_names;
-	CollectCTENames(*probe, cte_names);
-	QualifyTables(*probe, catalog.GetName(), cte_names);
+	QualifyTables(*probe, catalog.GetName(), identifier_set_t());
 	LogicalType result = LogicalType::INVALID;
 	try {
 		auto binder = Binder::CreateBinder(context);
@@ -455,9 +566,7 @@ vector<LogicalType> SQLiteSQLWriter::InferQueryTypes(const QueryNode &node, vect
 			}
 		}
 	}
-	identifier_set_t cte_names;
-	CollectCTENames(*probe, cte_names);
-	QualifyTables(*probe, catalog.GetName(), cte_names);
+	QualifyTables(*probe, catalog.GetName(), identifier_set_t());
 	try {
 		auto binder = Binder::CreateBinder(context);
 		auto bound = binder->Bind(*probe);
@@ -601,19 +710,62 @@ static bool SQLiteIsIntegerSubtype(const LogicalType &source, const LogicalType 
 //===--------------------------------------------------------------------===//
 // Constants
 //===--------------------------------------------------------------------===//
-static string SQLiteWriteDouble(double value) {
+//! The shortest literal of a double that reads back as the double - and whether SQLite reads it exactly: it computes
+//! digits / 10^e (or digits * 10^e), which is only rounded once if both are exact doubles (without long doubles that
+//! are wider than doubles, e.g. on arm64)
+static string SQLiteWriteDouble(double value, bool &exact) {
+	exact = true;
 	if (std::isinf(value)) {
 		// SQLite reads literals beyond the range of doubles as infinity
 		return value > 0 ? "9e999" : "(-9e999)";
 	}
 	char buffer[64];
-	snprintf(buffer, sizeof(buffer), "%.17g", value);
+	int precision = 1;
+	for (; precision < 17; precision++) {
+		snprintf(buffer, sizeof(buffer), "%.*e", precision - 1, value);
+		if (std::strtod(buffer, nullptr) == value) {
+			break;
+		}
+	}
+	snprintf(buffer, sizeof(buffer), "%.*e", precision - 1, value);
+	// the digits and the exponent of d.ddde[+-]xx
+	string mantissa(buffer, strchr(buffer, 'e') - buffer);
+	int64_t digits = 0;
+	for (auto c : mantissa) {
+		if (c >= '0' && c <= '9') {
+			digits = digits * 10 + (c - '0');
+		}
+	}
+	int64_t exponent = std::strtoll(strchr(buffer, 'e') + 1, nullptr, 10) - (precision - 1);
+	static constexpr int64_t MAX_EXACT_INTEGER = int64_t(1) << 53;
+	if (digits >= MAX_EXACT_INTEGER || exponent < -22 || exponent > 22) {
+		exact = false;
+	} else {
+		for (int64_t e = 0; e < exponent && exact; e++) {
+			// a positive exponent is applied to the digits as an integer first
+			digits *= 10;
+			exact = digits < MAX_EXACT_INTEGER;
+		}
+	}
+	snprintf(buffer, sizeof(buffer), "%.*g", precision, value);
 	string result(buffer);
 	if (result.find_first_of(".eE") == string::npos) {
 		// SQLite reads literals without a decimal point or exponent as integers
 		result += ".0";
 	}
 	return value < 0 || StringUtil::StartsWith(result, "-") ? "(" + result + ")" : result;
+}
+
+string SQLiteSQLWriter::WriteDouble(double value) {
+	bool exact;
+	auto result = SQLiteWriteDouble(value, exact);
+	if (!exact && !statement_mode) {
+		// the bits of the double
+		int64_t bits;
+		memcpy(&bits, &value, sizeof(bits));
+		return "duckdb_double(" + to_string(bits) + ")";
+	}
+	return result;
 }
 
 string SQLiteSQLWriter::WriteConstant(const Value &value) {
@@ -646,11 +798,11 @@ string SQLiteSQLWriter::WriteConstant(const Value &value) {
 		if (std::isnan(double_value)) {
 			throw SQLitePushdownNotSupported("SQLite has no NaN");
 		}
-		return SQLiteWriteDouble(double_value);
+		return WriteDouble(double_value);
 	}
 	case LogicalTypeId::DECIMAL:
 		// decimals are only supported where DuckDB converts them to DOUBLE
-		return SQLiteWriteDouble(value.GetValue<double>());
+		return WriteDouble(value.GetValue<double>());
 	case LogicalTypeId::VARCHAR: {
 		auto &str = StringValue::Get(value);
 		if (str.find('\0') != string::npos) {
@@ -2706,7 +2858,12 @@ string SQLiteSQLWriter::WriteAggregateCall(const string &name, const vector<Func
 			if (!SQLiteCapabilities::TryGetConstantValue(arg(1), value)) {
 				throw InternalException("SQLiteSQLWriter: the quantile must be a constant");
 			}
-			quantile = SQLiteWriteDouble(value.DefaultCastAs(LogicalType::DOUBLE).GetValue<double>());
+			if (value.type().id() == LogicalTypeId::DECIMAL) {
+				// DuckDB computes the index of a discrete quantile exactly for a decimal - which is passed as its text
+				quantile = WriteConstant(Value(value.ToString()));
+			} else {
+				quantile = WriteDouble(value.DefaultCastAs(LogicalType::DOUBLE).GetValue<double>());
+			}
 		}
 		return string(continuous ? "duckdb_quantile_cont(" : "duckdb_quantile_disc(") + WriteExpression(arg(0)) + ", " +
 		       quantile + ")";
@@ -3128,12 +3285,24 @@ string SQLiteSQLWriter::WriteTableRef(const TableRef &ref) {
 			}
 			result += (col > 0 ? ", " : "") + string("column") + to_string(col + 1) + " AS " + WriteIdentifier(name);
 		}
+		// the values are converted to the types of the columns, like DuckDB converts them (e.g. 1 and '1')
+		auto probe = make_uniq<SelectNode>();
+		probe->select_list.push_back(make_uniq<StarExpression>());
+		probe->from_table = const_cast<ExpressionListRef &>(expression_list).Copy(); // NOLINT: Copy is not const
+		auto types = InferQueryTypes(*probe);
+		if (types.size() != column_count) {
+			throw SQLitePushdownNotSupported("cannot determine the types of a VALUES list");
+		}
 		result += " FROM (VALUES ";
 		for (idx_t row = 0; row < expression_list.values.size(); row++) {
 			if (expression_list.values[row].size() != column_count) {
 				throw SQLitePushdownNotSupported("VALUES rows with a different number of columns");
 			}
-			result += (row > 0 ? ", " : "") + string("(") + WriteExpressionList(expression_list.values[row]) + ")";
+			result += (row > 0 ? ", " : "") + string("(");
+			for (idx_t col = 0; col < column_count; col++) {
+				result += (col > 0 ? ", " : "") + WriteAs(*expression_list.values[row][col], types[col]);
+			}
+			result += ")";
 		}
 		result += ")) AS " + WriteIdentifier(ref.alias.empty() ? Identifier("valueslist") : ref.alias);
 		return result;
@@ -3255,11 +3424,27 @@ string SQLiteSQLWriter::WriteCTEMap(const CommonTableExpressionMap &cte_map) {
 		result += "RECURSIVE ";
 	}
 	bool first_cte = true;
+	identifier_set_t later_ctes;
+	for (auto &kv : cte_map.map) {
+		later_ctes.insert(kv.first);
+	}
 	for (auto &kv : cte_map.map) {
 		if (!first_cte) {
 			result += ", ";
 		}
 		auto &cte = *kv.second;
+		later_ctes.erase(kv.first);
+		if (!later_ctes.empty() && cte.query_node) {
+			// in DuckDB a CTE does not see the CTEs defined after it - a reference with the name of one is a table
+			auto definition = cte.query_node->Copy();
+			SQLiteWalkBaseTables(
+			    *definition, identifier_set_t(), [&](BaseTableRef &ref, const identifier_set_t &scope) {
+				    auto &name = ref.GetQualifiedName();
+				    if (name.Path().size() == 1 && later_ctes.count(name.Name()) > 0 && scope.count(name.Name()) == 0) {
+					    throw SQLitePushdownNotSupported("a CTE that refers to a table with the name of a later CTE");
+				    }
+			    });
+		}
 		result += WriteIdentifier(kv.first);
 		if (!cte.aliases.empty()) {
 			result += " (";
@@ -3343,14 +3528,36 @@ string SQLiteSQLWriter::WriteFilteredSelectNode(const SelectNode &node) {
 			auto row_number = make_uniq<WindowExpression>(string(), string(), "row_number");
 			row_number->WindowStartMutable() = WindowBoundary::UNBOUNDED_PRECEDING;
 			row_number->WindowEndMutable() = WindowBoundary::CURRENT_ROW_RANGE;
+			// like an ORDER BY key, a target refers to a result column first (by name or position)
+			auto resolve = [&](const ParsedExpression &key) {
+				unique_ptr<ParsedExpression> result;
+				int64_t position;
+				if (SQLiteCapabilities::TryGetIntegerLiteral(key, position) && position >= 1 &&
+				    idx_t(position) <= node.select_list.size()) {
+					result = node.select_list[NumericCast<idx_t>(position - 1)]->Copy();
+				} else if (key.GetExpressionClass() == ExpressionClass::COLUMN_REF &&
+				           !key.Cast<ColumnRefExpression>().IsQualified()) {
+					auto &key_name = key.Cast<ColumnRefExpression>().GetColumnName().GetIdentifierName();
+					for (idx_t i = 0; i < names.size() && !result; i++) {
+						if (StringUtil::CIEquals(names[i], key_name)) {
+							result = node.select_list[i]->Copy();
+						}
+					}
+				}
+				if (!result) {
+					result = key.Copy();
+				}
+				result->ClearAlias();
+				return result;
+			};
 			for (auto &target : distinct_modifier.distinct_on_targets) {
-				row_number->PartitionsMutable().push_back(target->Copy());
+				row_number->PartitionsMutable().push_back(resolve(*target));
 			}
 			for (auto &mod : node.modifiers) {
 				if (mod->type == ResultModifierType::ORDER_MODIFIER) {
 					for (auto &order : mod->Cast<OrderModifier>().orders) {
 						row_number->OrderByMutable().emplace_back(order.type, order.null_order,
-						                                          order.expression->Copy());
+						                                          resolve(*order.expression));
 					}
 				}
 			}
@@ -4299,13 +4506,15 @@ void SQLiteSQLWriter::WriteCreateTable(CreateStatement &statement, SQLiteWriterR
 		throw InternalException("SQLiteSQLWriter: CREATE TABLE without a query should have been blocked by "
 		                        "SupportsPushdown");
 	}
+	if (!Settings::Get<DefaultCollationSetting>(context).empty()) {
+		// the query would compare strings with the collation in DuckDB
+		throw SQLitePushdownNotSupported("default_collation is set");
+	}
 	// bind the statement to resolve the column types of the query
 	auto bind_statement = statement.Copy();
 	auto &bind_info = bind_statement->Cast<CreateStatement>().info->Cast<CreateTableInfo>();
 	bind_info.SetQualifiedName(SQLiteQualifyName(info.GetQualifiedName(), catalog.GetName()));
-	identifier_set_t cte_names;
-	CollectCTENames(*bind_info.query->node, cte_names);
-	QualifyTables(*bind_info.query->node, catalog.GetName(), cte_names);
+	QualifyTables(*bind_info.query->node, catalog.GetName(), identifier_set_t());
 	auto binder = Binder::CreateBinder(context);
 	auto bound = binder->Bind(*bind_statement);
 	auto create_table = SQLiteFindCreateTable(*bound.plan);
@@ -4363,9 +4572,7 @@ void SQLiteSQLWriter::WriteCreateView(CreateViewInfo &info, SQLiteWriterResult &
 	vector<LogicalType> view_types;
 	{
 		auto probe = info.query->node->Copy();
-		identifier_set_t cte_names;
-		CollectCTENames(*probe, cte_names);
-		QualifyTables(*probe, catalog.GetName(), cte_names);
+		QualifyTables(*probe, catalog.GetName(), identifier_set_t());
 		auto binder = Binder::CreateBinder(context);
 		view_types = binder->Bind(*probe).types;
 	}
@@ -4379,9 +4586,7 @@ void SQLiteSQLWriter::WriteCreateView(CreateViewInfo &info, SQLiteWriterResult &
 			throw SQLitePushdownNotSupported("the view cannot be read back");
 		}
 		auto &read_back = *parser.statements[0]->Cast<SelectStatement>().node;
-		identifier_set_t cte_names;
-		CollectCTENames(read_back, cte_names);
-		QualifyTables(read_back, catalog.GetName(), cte_names);
+		QualifyTables(read_back, catalog.GetName(), identifier_set_t());
 		auto binder = Binder::CreateBinder(context);
 		if (binder->Bind(read_back).types != view_types) {
 			throw SQLitePushdownNotSupported("the view is read back with different types");

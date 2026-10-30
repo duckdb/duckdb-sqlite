@@ -590,6 +590,14 @@ static void SQLiteCheckTypeFunction(sqlite3_context *context, int argc, sqlite3_
 	});
 }
 
+//! duckdb_double(bits) - the double with the given bits (SQLite does not read every double literal exactly)
+static void SQLiteDoubleFunction(sqlite3_context *context, int argc, sqlite3_value **argv) {
+	int64_t bits = sqlite3_value_int64(argv[0]);
+	double value;
+	memcpy(&value, &bits, sizeof(value));
+	sqlite3_result_double(context, value);
+}
+
 //! duckdb_divide(x, y) - a floating point division (e.g. by a signed zero)
 static void SQLiteDivideFunction(sqlite3_context *context, int argc, sqlite3_value **argv) {
 	if (SQLiteHasNull(argc, argv)) {
@@ -1669,7 +1677,34 @@ struct SQLiteQuantileState {
 	}
 	vector<sqlite3_value *> values;
 	double quantile = 0;
+	//! A DECIMAL quantile (given as its text) - DuckDB computes the index of a discrete quantile exactly then
+	bool is_decimal = false;
+	hugeint_t integral;
+	hugeint_t scaling;
 };
+
+//! Parses a decimal quantile like "0.25" into its integral value and scaling (25 and 100)
+static bool SQLiteParseDecimalQuantile(const string &text, hugeint_t &integral, hugeint_t &scaling) {
+	integral = hugeint_t(0);
+	scaling = hugeint_t(1);
+	bool fraction = false;
+	idx_t digits = 0;
+	for (auto c : text) {
+		if (c == '.' && !fraction) {
+			fraction = true;
+			continue;
+		}
+		if (c < '0' || c > '9' || digits >= 30) {
+			return false;
+		}
+		integral = integral * hugeint_t(10) + hugeint_t(c - '0');
+		if (fraction) {
+			scaling = scaling * hugeint_t(10);
+		}
+		digits++;
+	}
+	return digits > 0 && integral <= scaling;
+}
 
 static void SQLiteQuantileStep(sqlite3_context *context, int argc, sqlite3_value **argv) {
 	if (sqlite3_value_type(argv[0]) == SQLITE_NULL) {
@@ -1680,11 +1715,18 @@ static void SQLiteQuantileStep(sqlite3_context *context, int argc, sqlite3_value
 		sqlite3_result_error_nomem(context);
 		return;
 	}
-	auto quantile = SQLiteDoubleArgument(argv[1]);
-	if (sqlite3_value_type(argv[1]) == SQLITE_NULL || !(quantile >= 0 && quantile <= 1)) {
-		throw InvalidInputException("The quantile must be between 0 and 1");
+	if (sqlite3_value_type(argv[1]) == SQLITE_TEXT) {
+		state->is_decimal = true;
+		if (!SQLiteParseDecimalQuantile(SQLiteTextArgument(argv[1]), state->integral, state->scaling)) {
+			throw InvalidInputException("The quantile must be between 0 and 1");
+		}
+	} else {
+		auto quantile = SQLiteDoubleArgument(argv[1]);
+		if (sqlite3_value_type(argv[1]) == SQLITE_NULL || !(quantile >= 0 && quantile <= 1)) {
+			throw InvalidInputException("The quantile must be between 0 and 1");
+		}
+		state->quantile = quantile;
 	}
-	state->quantile = quantile;
 	SQLiteAppendValue(state->values, argv[0]);
 }
 
@@ -1703,11 +1745,26 @@ static void SQLiteQuantileFinal(sqlite3_context *context) {
 	};
 	std::sort(values.begin(), values.end(), comparator);
 	if (DISCRETE) {
-		auto floored = idx_t(std::floor(double(n) - double(n) * state->quantile));
+		idx_t floored;
+		if (state->is_decimal) {
+			// integer arithmetic, like DuckDB
+			auto wide_n = hugeint_t(NumericCast<int64_t>(n));
+			int64_t result;
+			Hugeint::TryCast((wide_n * state->scaling - wide_n * state->integral) / state->scaling, result);
+			floored = NumericCast<idx_t>(result);
+		} else {
+			// a separate statement like in DuckDB - n - n * q in one expression can be contracted to a fused
+			// multiply-subtract, which rounds differently
+			const auto scaled_q = double(n) * state->quantile;
+			floored = idx_t(std::floor(double(n) - scaled_q));
+		}
 		auto index = MaxValue<idx_t>(1, n - floored) - 1;
 		sqlite3_result_value(context, values[index]);
 	} else {
-		double rn = double(n - 1) * state->quantile;
+		auto quantile = state->is_decimal
+		                    ? Hugeint::Cast<double>(state->integral) / Hugeint::Cast<double>(state->scaling)
+		                    : state->quantile;
+		double rn = double(n - 1) * quantile;
 		auto frn = idx_t(std::floor(rn));
 		auto crn = idx_t(std::ceil(rn));
 		auto lo = SQLiteDoubleArgument(values[frn]);
@@ -1825,6 +1882,7 @@ void SQLiteFunctions::Register(sqlite3 *db) {
 	    {"duckdb_pow", 2, SQLitePowFunction},
 	    {"duckdb_atan2", 2, SQLiteAtan2Function},
 	    {"duckdb_divide", 2, SQLiteDivideFunction},
+	    {"duckdb_double", 1, SQLiteDoubleFunction},
 	    {"duckdb_check_type", 3, SQLiteCheckTypeFunction},
 	    {"duckdb_shift_left", 3, SQLiteShiftLeftFunction},
 	    {"duckdb_shift_right", 3, SQLiteShiftRightFunction},

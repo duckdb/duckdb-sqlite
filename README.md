@@ -246,6 +246,7 @@ Known differences to executing the query in DuckDB:
 * SQLite's string functions (e.g. `length`, `substr`) end strings at a NUL character.
 * Duplicate result column names are made unique (e.g. `i` and `i_1`), like for the result of a subquery.
 * Pushed down queries require a database that uses the UTF-8 encoding.
+* Queries are not pushed down when `default_collation` is set, and `CREATE TABLE ... AS` raises an error then.
 
 ## Building & Loading the Extension
 

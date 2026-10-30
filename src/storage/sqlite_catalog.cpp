@@ -1,4 +1,5 @@
 #include "storage/sqlite_catalog.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
 #include "duckdb/storage/database_size.hpp"
 #include "sqlite_db.hpp"
@@ -290,13 +291,18 @@ unique_ptr<TableRef> SQLiteCatalog::RemoteExecute(ClientContext &context, unique
 	identifier_set_t cte_names;
 	SQLiteSQLWriter::CollectCTENames(*node, cte_names);
 	auto local_node = node->Copy();
-	SQLiteSQLWriter::QualifyTables(*local_node, GetName(), cte_names);
+	SQLiteSQLWriter::QualifyTables(*local_node, GetName(), identifier_set_t());
 	if (SQLiteIsTrivialQuery(*node, cte_names)) {
 		return SQLiteExecuteLocally(std::move(local_node));
 	}
 	if (!HasUTF8Encoding(context)) {
 		// strings are not ordered like DuckDB orders them
 		SQLitePrintPushdownFallback("the database does not use the UTF-8 encoding");
+		return SQLiteExecuteLocally(std::move(local_node));
+	}
+	if (!Settings::Get<DefaultCollationSetting>(context).empty()) {
+		// DuckDB compares the strings with the collation
+		SQLitePrintPushdownFallback("default_collation is set");
 		return SQLiteExecuteLocally(std::move(local_node));
 	}
 	BoundStatement bound;

@@ -95,7 +95,8 @@ public:
 	//! Collect the names of all CTEs defined anywhere in the query
 	static void CollectCTENames(QueryNode &node, identifier_set_t &cte_names);
 	//! Qualify all base table references with the catalog name again (the optimizer strips it before pushdown), so
-	//! that the query can be bound by DuckDB itself
+	//! that the query can be bound by DuckDB itself - except for references to the CTEs that are visible where they are
+	//! (cte_names are the CTEs that are visible to the query)
 	static void QualifyTables(QueryNode &node, const Identifier &catalog_name, const identifier_set_t &cte_names);
 
 private:
@@ -146,6 +147,8 @@ private:
 	string WriteFilteredSelectNode(const SelectNode &node);
 	string WriteSetOperationNode(const SetOperationNode &node);
 	string WriteSetOperationChild(const QueryNode &node);
+	//! A double that SQLite reads exactly
+	string WriteDouble(double value);
 	//! The WHERE clause of an UPDATE / DELETE with the given condition, which checks the values of the columns the
 	//! statement reads
 	string WriteDMLCondition(const string &condition);
