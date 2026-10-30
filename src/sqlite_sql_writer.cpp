@@ -1,6 +1,7 @@
 #include "sqlite_sql_writer.hpp"
 
 #include "duckdb.hpp"
+#include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/entry_lookup_info.hpp"
@@ -372,6 +373,81 @@ optional_ptr<SQLiteTableEntry> SQLiteSQLWriter::LookupTable(const QualifiedName 
 		                        table.name.GetIdentifierName());
 	}
 	return &table;
+}
+
+optional_ptr<ViewCatalogEntry> SQLiteSQLWriter::LookupView(const BaseTableRef &ref) {
+	auto &qualified_name = ref.GetQualifiedName();
+	if (qualified_name.Path().size() > 2) {
+		return nullptr;
+	}
+	Identifier schema_name = qualified_name.Schema().empty() ? Identifier(DEFAULT_SCHEMA) : qualified_name.Schema();
+	EntryLookupInfo lookup(CatalogType::VIEW_ENTRY,
+	                       QualifiedName(catalog.GetName(), schema_name, qualified_name.Name()));
+	auto entry = Catalog::GetEntry(context, lookup, OnEntryNotFound::RETURN_NULL);
+	if (!entry || entry->type != CatalogType::VIEW_ENTRY) {
+		return nullptr;
+	}
+	return &entry->Cast<ViewCatalogEntry>();
+}
+
+//! Whether every construct of a query (with its subqueries) can be pushed down
+static bool SQLiteSupportsQuery(SQLiteCatalog &catalog, QueryNode &node);
+
+static bool SQLiteSupportsExpression(SQLiteCatalog &catalog, ParsedExpression &expr) {
+	if (!catalog.SupportsPushdown(expr)) {
+		return false;
+	}
+	if (expr.GetExpressionClass() == ExpressionClass::SUBQUERY &&
+	    !SQLiteSupportsQuery(catalog, *expr.Cast<SubqueryExpression>().SubqueryMutable()->node)) {
+		return false;
+	}
+	bool result = true;
+	ParsedExpressionIterator::EnumerateChildren(
+	    expr, [&](ParsedExpression &child) { result = result && SQLiteSupportsExpression(catalog, child); });
+	return result;
+}
+
+static bool SQLiteSupportsQuery(SQLiteCatalog &catalog, QueryNode &node) {
+	if (!catalog.SupportsPushdown(node)) {
+		return false;
+	}
+	bool result = true;
+	// the nested query nodes (of subqueries in the FROM clause, set operations and CTEs) are visited as well
+	ParsedExpressionIterator::EnumerateQueryNodeChildren(
+	    node,
+	    [&](unique_ptr<ParsedExpression> &child) { result = result && SQLiteSupportsExpression(catalog, *child); },
+	    [&](TableRef &ref) {
+		    result = result && catalog.SupportsPushdown(ref);
+		    if (result && ref.type == TableReferenceType::SUBQUERY) {
+			    result = catalog.SupportsPushdown(*ref.Cast<SubqueryRef>().subquery->node);
+		    }
+	    });
+	if (node.type == QueryNodeType::SET_OPERATION_NODE) {
+		for (auto &child : node.Cast<SetOperationNode>().children) {
+			result = result && catalog.SupportsPushdown(*child);
+		}
+	}
+	for (auto &cte : node.cte_map.map) {
+		result = result && (!cte.second->query_node || catalog.SupportsPushdown(*cte.second->query_node));
+	}
+	return result;
+}
+
+string SQLiteSQLWriter::WriteViewRef(const BaseTableRef &ref, ViewCatalogEntry &view) {
+	// the view is replaced with its query, which DuckDB binds the same way
+	auto query = unique_ptr_cast<SQLStatement, SelectStatement>(view.GetQuery().Copy());
+	if (!SQLiteSupportsQuery(catalog, *query->node) ||
+	    (create_table_as && !catalog.SupportsStatementQuery(*query->node))) {
+		throw SQLitePushdownNotSupported("the query of view " + view.name.GetIdentifierName() +
+		                                 " cannot be pushed down");
+	}
+	// the columns of the tables of the view that its query references are read (and converted) as well
+	SQLiteCollectColumnReferences(*query->node, referenced_columns, all_columns_referenced);
+	auto subquery = make_uniq<SubqueryRef>(std::move(query));
+	subquery->alias = ref.alias.empty() ? view.name : ref.alias;
+	subquery->column_name_alias = ref.column_name_alias.empty() ? view.aliases : ref.column_name_alias;
+	owned_refs.push_back(std::move(subquery));
+	return WriteTableRef(*owned_refs.back());
 }
 
 bool SQLiteSQLWriter::IsCTEReference(const BaseTableRef &ref) {
@@ -2791,6 +2867,10 @@ string SQLiteSQLWriter::WriteAggregateCall(const string &name, const vector<Func
 		return string(name == "sum" ? "sum(" : "avg(") + distinct_str + WriteExpression(arg(0)) + ")";
 	}
 	if (name == "min" || name == "max") {
+		if (children.size() != 1) {
+			// min(x, n) returns the n smallest values as a list
+			throw SQLitePushdownNotSupported(name + " with more than one argument");
+		}
 		auto type = RequireType(arg(0));
 		if (SQLiteGetRepresentation(type) == SQLiteRepresentation::OTHER || type.id() == LogicalTypeId::DECIMAL ||
 		    type.id() == LogicalTypeId::FLOAT) {
@@ -2830,6 +2910,10 @@ string SQLiteSQLWriter::WriteAggregateCall(const string &name, const vector<Func
 	}
 	if (name == "arg_min" || name == "arg_max" || name == "min_by" || name == "max_by" || name == "argmin" ||
 	    name == "argmax") {
+		if (children.size() != 2) {
+			// arg_min(x, y, n) returns a list
+			throw SQLitePushdownNotSupported(name + " with more than two arguments");
+		}
 		for (idx_t i = 0; i < 2; i++) {
 			auto type = RequireType(arg(i));
 			if (SQLiteGetRepresentation(type) == SQLiteRepresentation::OTHER || type.id() == LogicalTypeId::DECIMAL ||
@@ -3030,8 +3114,29 @@ string SQLiteSQLWriter::WriteWindow(const WindowExpression &window) {
 				throw SQLitePushdownNotSupported("unsupported RANGE frame");
 			}
 		}
-		string start_expr = window.StartExpr() ? WriteExpression(*window.StartExpr()) : string();
-		string end_expr = window.EndExpr() ? WriteExpression(*window.EndExpr()) : string();
+		auto write_offset = [&](const unique_ptr<ParsedExpression> &offset) {
+			if (!offset) {
+				return string();
+			}
+			if (mode == "RANGE") {
+				return WriteExpression(*offset);
+			}
+			// DuckDB converts the offset of ROWS / GROUPS frames to BIGINT, SQLite requires an integer
+			Value value;
+			if (SQLiteCapabilities::TryGetConstantValue(*offset, value)) {
+				auto integer_value = value.DefaultTryCastAs(LogicalType::BIGINT);
+				if (!integer_value) {
+					throw SQLitePushdownNotSupported("unsupported frame offset");
+				}
+				return WriteConstant(*integer_value);
+			}
+			if (!SQLiteIsIntegerType(RequireType(*offset))) {
+				throw SQLitePushdownNotSupported("unsupported frame offset");
+			}
+			return WriteExpression(*offset);
+		};
+		string start_expr = write_offset(window.StartExpr());
+		string end_expr = write_offset(window.EndExpr());
 		result += sep + mode;
 		result += " BETWEEN " + SQLiteWriteWindowBoundary(window_start, start_expr);
 		result += " AND " + SQLiteWriteWindowBoundary(window_end, end_expr);
@@ -3133,14 +3238,18 @@ string SQLiteSQLWriter::WriteBaseTableRef(const BaseTableRef &ref) {
 	}
 	auto table = LookupTable(ref);
 	if (!table) {
-		// e.g. a view - which is executed with DuckDB's semantics
+		auto view = LookupView(ref);
+		if (view) {
+			return WriteViewRef(ref, *view);
+		}
 		throw SQLitePushdownNotSupported("table " + ref.Table().GetIdentifierName() + " not found");
 	}
 	auto table_name = WriteIdentifier(table->name);
 	auto binding = WriteIdentifier(ref.alias.empty() ? table->name : ref.alias);
 	auto &columns = table->GetColumns();
 	vector<string> reads;
-	bool requires_conversion = !ref.column_name_alias.empty();
+	// the columns are listed explicitly for a table with generated columns, which DuckDB does not read
+	bool requires_conversion = !ref.column_name_alias.empty() || table->generated_columns;
 	for (auto &column : columns.Logical()) {
 		auto column_name = WriteIdentifier(column.Name());
 		auto read = SQLiteColumnRead(*table, column, column_name);
@@ -4539,7 +4648,9 @@ void SQLiteSQLWriter::WriteCreateTable(CreateStatement &statement, SQLiteWriterR
 	result.preliminary_queries.push_back(std::move(create_sql));
 	// fill the table with the result of the query - converted to the column types
 	CollectColumnReferences(*info.query->node);
+	create_table_as = true;
 	auto query_str = WriteQueryNode(*info.query->node);
+	create_table_as = false;
 	{
 		// verify that SQLite accepts the query - the table does not exist yet, so the statement cannot be prepared
 		auto &db = SQLiteTransaction::Get(context, catalog).GetDB();

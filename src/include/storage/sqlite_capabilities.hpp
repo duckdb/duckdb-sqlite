@@ -51,6 +51,11 @@ public:
 	//! Whether a (supported) function is an aggregate function
 	static bool IsAggregateFunction(const string &name);
 
+	//! Whether an expression / query can be serialized without depending on the types it operates on, and without
+	//! using the functions of the extension - statements that are pushed down cannot be executed locally instead
+	bool SupportsStatementExpression(ParsedExpression &expr);
+	bool SupportsStatementQuery(QueryNode &node);
+
 private:
 	bool SupportsFunction(const FunctionExpression &func);
 	bool SupportsWindow(const WindowExpression &window);
@@ -60,10 +65,6 @@ private:
 	bool SupportsOrderEntries(const vector<OrderByNode> &orders,
 	                          optional_ptr<const vector<unique_ptr<ParsedExpression>>> select_list = nullptr);
 	bool SupportsSelectAliasUsage(const SelectNode &select);
-	//! Whether an expression / query can be serialized without depending on the types it operates on, and without
-	//! using the functions of the extension - statements that are pushed down cannot be executed locally instead
-	bool SupportsStatementExpression(ParsedExpression &expr);
-	bool SupportsStatementQuery(QueryNode &node);
 
 private:
 	//! Whether the database was attached read-only - DML and DDL are never pushed down then

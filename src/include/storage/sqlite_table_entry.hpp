@@ -35,6 +35,8 @@ public:
 	//! Whether a unique index (or the primary key) compares a column with a collation other than BINARY - SQLite then
 	//! finds conflicts that DuckDB does not
 	bool non_binary_unique_key = false;
+	//! Whether the table has generated columns - which DuckDB does not read, but which SQLite expands a * to
+	bool generated_columns = false;
 
 public:
 	const ColumnList &GetColumns() const override;

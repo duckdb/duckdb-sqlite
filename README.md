@@ -226,6 +226,7 @@ Queries that are plain scans of a single table are executed through the regular 
 
 The translation takes the differences between DuckDB and SQLite into account, for example:
 
+* Views of the database are read with their query, like DuckDB reads them.
 * Columns are read the way the table scan reads them: `DATE` / `TIMESTAMP` columns can contain ISO strings and unix timestamps, untyped columns are read as `BLOB`, columns with a collation (e.g. `COLLATE NOCASE`) are compared byte-wise like DuckDB compares strings, and with `sqlite_all_varchar` all columns are read as `VARCHAR`.
 * SQLite's `LIKE` is case insensitive - `LIKE` with a constant pattern is translated to `GLOB`.
 * `a / b` is a floating point division, `NULLS LAST` is the default order, a scalar subquery that returns more than one row raises an error, ...

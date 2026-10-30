@@ -28,6 +28,7 @@ class ColumnRefExpression;
 class DeleteQueryNode;
 class ExpressionListRef;
 class OnConflictInfo;
+class ViewCatalogEntry;
 class FunctionArgument;
 class FunctionExpression;
 class InsertQueryNode;
@@ -103,6 +104,9 @@ private:
 	//! Collect the columns that are referenced by the query - columns that are not referenced are not converted
 	void CollectColumnReferences(QueryNode &node);
 	optional_ptr<SQLiteTableEntry> LookupTable(const BaseTableRef &ref);
+	optional_ptr<ViewCatalogEntry> LookupView(const BaseTableRef &ref);
+	//! Writes a reference to a view of the database as a subquery of the query of the view
+	string WriteViewRef(const BaseTableRef &ref, ViewCatalogEntry &view);
 	optional_ptr<SQLiteTableEntry> LookupTable(const QualifiedName &qualified_name);
 	bool IsCTEReference(const BaseTableRef &ref);
 
@@ -224,6 +228,10 @@ private:
 	unordered_map<const ParsedExpression *, LogicalType> type_cache;
 	//! Rewritten copies of query nodes - kept alive while writing, the type cache refers to their expressions
 	vector<unique_ptr<QueryNode>> owned_nodes;
+	vector<unique_ptr<TableRef>> owned_refs;
+	//! Whether the query of a CREATE TABLE AS is written - its constructs must be translated whatever types they
+	//! operate on
+	bool create_table_as = false;
 	//! Counter for generating aliases for unnamed subqueries
 	idx_t unnamed_subquery_index = 0;
 	//! The target table of the DML statement that is being written, the names it is bound to, and the scope of the

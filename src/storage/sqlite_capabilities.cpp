@@ -1451,6 +1451,10 @@ bool SQLiteCapabilities::SupportsStatementQuery(QueryNode &node) {
 		    } else if (ref.type == TableReferenceType::SUBQUERY &&
 		               !SupportsStatementQuery(*ref.Cast<SubqueryRef>().subquery->node)) {
 			    result = false;
+		    } else if (ref.type == TableReferenceType::JOIN &&
+		               ref.Cast<JoinRef>().right->type == TableReferenceType::SUBQUERY) {
+			    // the subquery can refer to the tables before it (LATERAL), which SQLite does not support
+			    result = false;
 		    }
 	    });
 	if (!result) {

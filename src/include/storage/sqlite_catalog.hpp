@@ -76,6 +76,11 @@ public:
 	bool SupportsPushdown(const QueryNode &node) override;
 	bool SupportsPushdown(const SQLStatement &statement) override;
 	unique_ptr<TableRef> RemoteExecute(ClientContext &context, unique_ptr<QueryNode> node) override;
+	//! Whether the query of a pushed down statement only uses constructs that are translated whatever types they
+	//! operate on
+	bool SupportsStatementQuery(QueryNode &node) {
+		return capabilities.SupportsStatementQuery(node);
+	}
 	unique_ptr<TableRef> RemoteExecute(ClientContext &context, unique_ptr<SQLStatement> statement) override;
 
 private:

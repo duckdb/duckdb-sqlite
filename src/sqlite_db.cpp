@@ -422,9 +422,11 @@ void SQLiteDB::GetTableInfo(const string &table_name, ColumnList &columns, vecto
 	}
 }
 
-case_insensitive_set_t SQLiteDB::GetIndexedColumns(const string &table_name, bool &non_binary_unique_key) {
+case_insensitive_set_t SQLiteDB::GetIndexedColumns(const string &table_name, bool &non_binary_unique_key,
+                                                   bool &generated_columns) {
 	case_insensitive_set_t result;
 	non_binary_unique_key = false;
+	generated_columns = false;
 	string rowid_name;
 	if (TryGetRowIdName(table_name, rowid_name)) {
 		result.insert(rowid_name);
@@ -433,8 +435,13 @@ case_insensitive_set_t SQLiteDB::GetIndexedColumns(const string &table_name, boo
 	vector<string> pk_columns;
 	string pk_type;
 	SQLiteStatement stmt;
-	stmt = Prepare(StringUtil::Format("PRAGMA table_info(\"%s\")", SQLiteUtils::SanitizeIdentifier(table_name)));
+	// cid, name, type, notnull, dflt_value, pk, hidden (2 and 3 are generated columns)
+	stmt = Prepare(StringUtil::Format("PRAGMA table_xinfo(\"%s\")", SQLiteUtils::SanitizeIdentifier(table_name)));
 	while (stmt.Step()) {
+		auto hidden = stmt.GetValue<int>(6);
+		if (hidden == 2 || hidden == 3) {
+			generated_columns = true;
+		}
 		if (stmt.GetValue<int>(5) > 0) {
 			pk_columns.push_back(stmt.GetValue<string>(1));
 			pk_type = stmt.GetValue<string>(2);

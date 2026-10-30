@@ -212,7 +212,8 @@ optional_ptr<CatalogEntry> SQLiteTransaction::GetCatalogEntry(const string &entr
 			// only the SQL that remote pushdown generates depends on these - they are not read otherwise, as they
 			// take several statements per table
 			table->binary_collation = GetDB().GetBinaryCollation(entry_name, table->GetColumns());
-			table->indexed_columns = GetDB().GetIndexedColumns(entry_name, table->non_binary_unique_key);
+			table->indexed_columns =
+			    GetDB().GetIndexedColumns(entry_name, table->non_binary_unique_key, table->generated_columns);
 			table->real_affinity = GetDB().GetRealAffinity(entry_name, table->GetColumns());
 			table->has_pushdown_info = true;
 		}
