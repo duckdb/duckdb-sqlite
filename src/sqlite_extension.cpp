@@ -5,6 +5,7 @@
 
 #include "sqlite_db.hpp"
 #include "sqlite_duckdb_vfs_cache.hpp"
+#include "sqlite_ducklake_profile.hpp"
 #include "sqlite_scanner.hpp"
 #include "sqlite_storage.hpp"
 #include "sqlite_scanner_extension.hpp"
@@ -68,6 +69,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	StorageExtension::Register(config, "sqlite_scanner", make_shared_ptr<SQLiteStorageExtension>());
 	ExtensionCallback::Register(config, make_shared_ptr<SQLiteVFSCleanupCallback>());
+	SQLiteDuckLakeProfile::Register(db);
 }
 
 void SqliteScannerExtension::Load(ExtensionLoader &loader) {
