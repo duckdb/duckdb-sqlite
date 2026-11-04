@@ -23,7 +23,7 @@ static constexpr const char *DUCKLAKE_PROFILE =
 	"rename_inlined_columns_by_copy": true,
 	"commit_errors": [
 		{
-			"pattern": "failed to execute query \"commit\": database is locked",
+			"pattern": "failed to commit: failed to execute query: database is locked",
 			"hint": "In its rollback journal mode, a SQLite catalog cannot commit while another transaction is )"
     R"(open on it. Attach the catalog with META_JOURNAL_MODE 'WAL' to let open transactions and a )"
     R"(commit run at the same time.\n",
