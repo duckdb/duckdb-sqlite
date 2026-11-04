@@ -1,0 +1,117 @@
+# name: test/sql/storage/attach_rowid_column_transaction.test
+# description: UPDATE and DELETE do not write other rows after a statement executed in SQLite adds a column named after the row id that the transaction scans by
+# group: [storage]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/attach_rowid_column_transaction.db' AS s (TYPE SQLITE)
+
+statement ok
+FROM sqlite_query('s', 'CREATE TABLE t(v INT)')
+
+statement ok
+FROM sqlite_query('s', 'INSERT INTO t VALUES (1), (2), (3)')
+
+statement ok
+BEGIN
+
+# reads the table with its row id name
+query I
+SELECT v FROM s.t ORDER BY v
+----
+1
+2
+3
+
+statement ok
+FROM sqlite_query('s', 'ALTER TABLE t ADD COLUMN rowid INT')
+
+statement ok
+FROM sqlite_query('s', 'UPDATE t SET rowid = 3')
+
+statement error
+DELETE FROM s.t WHERE v = 1
+----
+its columns were changed in SQLite directly in this transaction
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+query I
+SELECT v FROM s.t ORDER BY v
+----
+1
+2
+3
+
+statement ok
+FROM sqlite_query('s', 'ALTER TABLE t ADD COLUMN rowid INT')
+
+statement ok
+FROM sqlite_query('s', 'UPDATE t SET rowid = 3')
+
+statement error
+UPDATE s.t SET v = 100 WHERE v = 1
+----
+its columns were changed in SQLite directly in this transaction
+
+statement ok
+ROLLBACK
+
+query II
+SELECT * FROM sqlite_query('s', 'SELECT _rowid_, v FROM t ORDER BY _rowid_')
+----
+1	1
+2	2
+3	3
+
+# ALTER TABLE through DuckDB reads the table again
+statement ok
+BEGIN
+
+query I
+SELECT v FROM s.t ORDER BY v
+----
+1
+2
+3
+
+statement ok
+ALTER TABLE s.t ADD COLUMN rowid INT
+
+statement ok
+UPDATE s.t SET rowid = 3
+
+statement ok
+DELETE FROM s.t WHERE v = 1
+
+statement ok
+UPDATE s.t SET v = 100 WHERE v = 2
+
+statement ok
+COMMIT
+
+query III
+SELECT * FROM sqlite_query('s', 'SELECT _rowid_ AS rid, rowid AS col, v FROM t ORDER BY _rowid_')
+----
+2	3	100
+3	3	3
+
+# so does a new transaction
+statement ok
+FROM sqlite_query('s', 'ALTER TABLE t ADD COLUMN _rowid_ INT')
+
+statement ok
+FROM sqlite_query('s', 'UPDATE t SET _rowid_ = 2')
+
+statement ok
+DELETE FROM s.t WHERE v = 3
+
+query IIII
+SELECT * FROM sqlite_query('s', 'SELECT oid AS rid, rowid AS col, _rowid_ AS col2, v FROM t ORDER BY oid')
+----
+2	3	2	100

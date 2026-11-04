@@ -49,7 +49,7 @@ unique_ptr<GlobalSinkState> SQLiteUpdate::GetGlobalSinkState(ClientContext &cont
 	auto &transaction = SQLiteTransaction::Get(context, sqlite_table.catalog);
 	auto result = make_uniq<SQLiteUpdateGlobalState>(sqlite_table);
 	auto &db = transaction.GetDB();
-	auto rowid_name = db.GetRowIdName(sqlite_table.name.GetIdentifierName());
+	auto rowid_name = sqlite_table.GetWriteRowIdName(db);
 	result->statement = db.Prepare(GetUpdateSQL(sqlite_table, columns, rowid_name));
 	return std::move(result);
 }

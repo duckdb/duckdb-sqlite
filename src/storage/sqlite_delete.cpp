@@ -71,7 +71,7 @@ SourceResultType SQLiteDelete::GetDataInternal(ExecutionContext &context, DataCh
 			auto &transaction = SQLiteTransaction::Get(context.client, insert_gstate.table.catalog);
 			auto &db = transaction.GetDB();
 			auto table_name = insert_gstate.table.name.GetIdentifierName();
-			insert_gstate.statement = db.Prepare(GetDeleteSQL(table_name, db.GetRowIdName(table_name)));
+			insert_gstate.statement = db.Prepare(GetDeleteSQL(table_name, insert_gstate.table.GetWriteRowIdName(db)));
 		}
 		for (auto row_id : insert_gstate.rowids) {
 			insert_gstate.statement.Bind<int64_t>(0, row_id);

@@ -10,9 +10,10 @@
 namespace duckdb {
 
 SQLiteTableEntry::SQLiteTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info,
-                                   bool all_varchar, vector<bool> utf8_text_affinity_p)
+                                   bool all_varchar, vector<bool> utf8_text_affinity_p, string rowid_name_p)
     : TableCatalogEntry(catalog, schema, info), all_varchar(all_varchar),
-      utf8_text_affinity(std::move(utf8_text_affinity_p)), columns(std::move(info.columns)) {
+      utf8_text_affinity(std::move(utf8_text_affinity_p)), rowid_name(std::move(rowid_name_p)),
+      columns(std::move(info.columns)) {
 }
 
 const ColumnList &SQLiteTableEntry::GetColumns() const {
@@ -42,7 +43,7 @@ TableFunction SQLiteTableEntry::GetScanFunction(ClientContext &context, unique_p
 	auto &transaction = Transaction::Get(context, catalog).Cast<SQLiteTransaction>();
 	auto &db = transaction.GetDB();
 
-	db.TryGetRowIdName(name.GetIdentifierName(), result->rowid_name);
+	result->rowid_name = rowid_name;
 	if (!db.GetRowIdInfo(name.GetIdentifierName(), result->rowid_name, result->row_id_info)) {
 		result->rows_per_group = optional_idx();
 	}
@@ -88,8 +89,6 @@ TableStorageInfo SQLiteTableEntry::GetStorageInfo(ClientContext &context) {
 	TableStorageInfo result;
 
 	RowIdInfo info;
-	string rowid_name;
-	db.TryGetRowIdName(name.GetIdentifierName(), rowid_name);
 	if (!db.GetRowIdInfo(name.GetIdentifierName(), rowid_name, info)) {
 		// probably
 		result.cardinality = 10000;
@@ -99,6 +98,18 @@ TableStorageInfo SQLiteTableEntry::GetStorageInfo(ClientContext &context) {
 
 	result.index_info = db.GetIndexInfo(name.GetIdentifierName());
 	return result;
+}
+
+string SQLiteTableEntry::GetWriteRowIdName(SQLiteDB &db) const {
+	auto table_name = name.GetIdentifierName();
+	auto current_rowid_name = db.GetRowIdName(table_name);
+	if (current_rowid_name != rowid_name) {
+		// the scan read the row ids by the name of this entry, which can now address a column
+		throw TransactionException("Cannot update or delete rows of SQLite table \"%s\": its columns were changed in "
+		                           "SQLite directly in this transaction",
+		                           table_name);
+	}
+	return current_rowid_name;
 }
 
 dbconnector::attached::AttachedTable SQLiteTableEntry::Lookup(ClientContext &ctx, QualifiedName name) {

@@ -370,8 +370,25 @@ static unique_ptr<ParsedExpression> ParseSQLiteDefault(const string &default_val
 	return std::move(expr);
 }
 
+static bool FindRowIdName(const vector<string> &column_names, string &rowid_name) {
+	for (auto candidate : {"rowid", "_rowid_", "oid"}) {
+		bool hidden = false;
+		for (auto &column_name : column_names) {
+			if (StringUtil::CIEquals(column_name, candidate)) {
+				hidden = true;
+				break;
+			}
+		}
+		if (!hidden) {
+			rowid_name = candidate;
+			return true;
+		}
+	}
+	return false;
+}
+
 void SQLiteDB::GetTableInfo(const string &table_name, ColumnList &columns, vector<unique_ptr<Constraint>> &constraints,
-                            bool all_varchar, vector<bool> &utf8_text_affinity) {
+                            bool all_varchar, vector<bool> &utf8_text_affinity, string &rowid_name) {
 	SQLiteStatement stmt;
 
 	idx_t primary_key_index = idx_t(-1);
@@ -379,14 +396,21 @@ void SQLiteDB::GetTableInfo(const string &table_name, ColumnList &columns, vecto
 
 	bool found = false;
 	utf8_text_affinity.clear();
+	vector<string> all_column_names;
 
 	stmt = Prepare("PRAGMA encoding");
 	bool utf8 = stmt.Step() && stmt.GetValue<string>(0) == "UTF-8";
 
-	stmt = Prepare(StringUtil::Format("PRAGMA table_info('%s')", SQLiteUtils::SanitizeString(table_name)));
+	// table_xinfo also lists the hidden (e.g. generated) columns: DuckDB does not read them, but they hide row id names
+	stmt = Prepare(StringUtil::Format("PRAGMA table_xinfo('%s')", SQLiteUtils::SanitizeString(table_name)));
 	while (stmt.Step()) {
-		auto cid = stmt.GetValue<int>(0);
 		auto sqlite_colname = stmt.GetValue<string>(1);
+		all_column_names.push_back(sqlite_colname);
+		auto hidden = stmt.GetValue<int>(6);
+		if (hidden) {
+			continue;
+		}
+		auto cid = columns.LogicalColumnCount();
 		auto sqlite_type = StringUtil::Lower(stmt.GetValue<string>(2));
 		auto not_null = stmt.GetValue<int>(3);
 		auto default_value = stmt.GetValue<string>(4);
@@ -422,6 +446,8 @@ void SQLiteDB::GetTableInfo(const string &table_name, ColumnList &columns, vecto
 		}
 		constraints.emplace_back(std::move(uc));
 	}
+	rowid_name.clear();
+	FindRowIdName(all_column_names, rowid_name);
 }
 
 case_insensitive_set_t SQLiteDB::GetIndexedColumns(const string &table_name, bool &non_binary_unique_key,
@@ -532,20 +558,7 @@ bool SQLiteDB::TryGetRowIdName(const string &table_name, string &rowid_name) {
 	while (stmt.Step()) {
 		column_names.push_back(stmt.GetValue<string>(1));
 	}
-	for (auto candidate : {"rowid", "_rowid_", "oid"}) {
-		bool hidden = false;
-		for (auto &column_name : column_names) {
-			if (StringUtil::CIEquals(column_name, candidate)) {
-				hidden = true;
-				break;
-			}
-		}
-		if (!hidden) {
-			rowid_name = candidate;
-			return true;
-		}
-	}
-	return false;
+	return FindRowIdName(column_names, rowid_name);
 }
 
 string SQLiteDB::GetRowIdName(const string &table_name) {

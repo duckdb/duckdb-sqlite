@@ -71,7 +71,8 @@ static unique_ptr<FunctionData> SqliteBind(ClientContext &context, TableFunction
 	vector<unique_ptr<Constraint>> constraints;
 
 	result->all_varchar = SQLiteUtils::AllVarchar(context);
-	db.GetTableInfo(result->table_name, columns, constraints, result->all_varchar, result->utf8_text_affinity);
+	db.GetTableInfo(result->table_name, columns, constraints, result->all_varchar, result->utf8_text_affinity,
+	                result->rowid_name);
 	for (auto &column : columns.Logical()) {
 		names.emplace_back(column.GetName());
 		return_types.push_back(column.GetType());
@@ -81,7 +82,6 @@ static unique_ptr<FunctionData> SqliteBind(ClientContext &context, TableFunction
 		throw std::runtime_error("no columns for table " + result->table_name);
 	}
 
-	db.TryGetRowIdName(result->table_name, result->rowid_name);
 	if (!db.GetRowIdInfo(result->table_name, result->rowid_name, result->row_id_info)) {
 		result->rows_per_group = optional_idx();
 	}
