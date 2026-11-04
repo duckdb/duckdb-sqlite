@@ -1,0 +1,81 @@
+# name: test/sql/storage/attach_sqlite_query_column_types.test
+# description: sqlite_query with column_types and column_names
+# group: [storage]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/sqlite_query_column_types.db' AS s (TYPE SQLITE)
+
+statement ok
+CALL sqlite_query(s, 'CREATE TABLE t(id INTEGER, name TEXT, d DATE)')
+
+statement ok
+CALL sqlite_query(s, 'INSERT INTO t VALUES (1, ''a'', ''2024-01-02''), (2, ''b'', 1704153600)')
+
+# without column_types the query is prepared when it is bound - the columns are VARCHAR, named like in SQLite
+query III
+SELECT column_name, column_type, "null" FROM (DESCRIBE SELECT * FROM sqlite_query(s, 'SELECT id, name, d FROM t'))
+----
+id	VARCHAR	YES
+name	VARCHAR	YES
+d	VARCHAR	YES
+
+# with column_types the query is not prepared when it is bound - the columns are named c0, c1, ...
+query III
+SELECT * FROM sqlite_query(s, 'SELECT id, name, d FROM t ORDER BY id', column_types := ['BIGINT', 'VARCHAR', 'DATE'])
+----
+1	a	2024-01-02
+2	b	2024-01-02
+
+query III
+SELECT column_name, column_type, "null" FROM (DESCRIBE SELECT * FROM sqlite_query(s, 'SELECT id, name, d FROM t', column_types := ['BIGINT', 'VARCHAR', 'DATE']))
+----
+c0	BIGINT	YES
+c1	VARCHAR	YES
+c2	DATE	YES
+
+# column_names names them
+query III
+SELECT column_name, column_type, "null" FROM (DESCRIBE SELECT * FROM sqlite_query(s, 'SELECT id, name, d FROM t', column_types := ['BIGINT', 'VARCHAR', 'DATE'], column_names := ['id', 'name', 'day']))
+----
+id	BIGINT	YES
+name	VARCHAR	YES
+day	DATE	YES
+
+query II
+SELECT day, name FROM sqlite_query(s, 'SELECT id, name, d FROM t', column_types := ['BIGINT', 'VARCHAR', 'DATE'], column_names := ['id', 'name', 'day']) WHERE id = 2
+----
+2024-01-02	b
+
+statement error
+FROM sqlite_query(s, 'SELECT id, name FROM t', column_types := ['BIGINT', 'VARCHAR'], column_names := ['id'])
+----
+1 column_names were specified, but 2 column_types
+
+statement error
+FROM sqlite_query(s, 'SELECT id FROM t', column_names := ['id'])
+----
+column_names can only be specified together with column_types
+
+statement error
+FROM sqlite_query(s, 'SELECT id FROM t', column_types := ['BIGINT'], column_names := [NULL])
+----
+cannot contain NULL
+
+# errors in the query and a wrong number of column_types are reported when the query is executed
+statement error
+FROM sqlite_query(s, 'SELECT id, name FROM t', column_types := ['BIGINT'])
+----
+The query returns 2 columns, but 1 column_types were specified
+
+statement error
+FROM sqlite_query(s, 'SELECT id FROM missing_table', column_types := ['BIGINT'])
+----
+no such table: missing_table
+
+# the query can depend on preliminary queries
+query I
+FROM sqlite_query(s, 'SELECT count(*) FROM t2', column_types := ['BIGINT'], preliminary_queries := ['CREATE TABLE t2 AS SELECT * FROM t'])
+----
+2

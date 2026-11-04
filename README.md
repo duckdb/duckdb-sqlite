@@ -181,6 +181,74 @@ SELECT * FROM sqlite_db.tmp;
 └────────┘
 ```
 
+## Running Queries in SQLite
+
+The `sqlite_query` table function runs a query directly in an attached SQLite database:
+
+```sql
+SELECT * FROM sqlite_query('sqlite_db', 'SELECT name, count(*) FROM tbl GROUP BY name');
+```
+
+Statements without a result (e.g. DDL) return the number of changed rows. The function accepts the following named parameters:
+
+* `params` - a `STRUCT` of values for the `?` parameters of the query, e.g. `params = row(42, 'DuckDB')`
+* `column_types` - the types of the result columns, e.g. `column_types = ['BIGINT', 'DATE']`. The values are converted to these types whatever SQLite type they are stored with (integers and floats are read as unix timestamps for `DATE` / `TIMESTAMP`, like the table scan reads them). Without it, all result columns are `VARCHAR`. With `column_types`, the query is not prepared before it is executed, so the result columns are named `c0`, `c1`, ... (unless `column_names` are given), and errors in the query (or a wrong number of `column_types`) are only reported when it is executed.
+* `column_names` - the names of the result columns when `column_types` are given, e.g. `column_names = ['id', 'day']`
+* `preliminary_queries` - statements that are executed (in the same transaction) before the query
+* `return_changed_rows` / `suppress_output` - report the number of changed rows like a DuckDB DML statement does / report no result, like a DDL statement
+* `clear_catalog_cache` - remove the cached catalog entries of the transaction after executing the statement (e.g. after DDL)
+* `modifies_database` - the query writes to the database (e.g. `INSERT ... RETURNING` with `column_types`). Statements are checked against the transaction like DuckDB statements (e.g. a read-only transaction cannot write) - whether a statement writes is determined by SQLite when the query is prepared when it is bound, statements without a result are assumed to write
+
+`EXPLAIN` shows the SQL of the query.
+
+## Remote Pushdown
+
+With remote pushdown, queries and statements that only reference tables of a single attached SQLite database are executed in SQLite as a whole (instead of scanning the tables and executing the query in DuckDB), when every construct they use can be translated to SQLite SQL with the same semantics. This covers e.g. joins, aggregates, window functions, CTEs, set operations, subqueries, many scalar functions, `UPDATE` / `DELETE` / `INSERT` (including `RETURNING` and `ON CONFLICT`, which are only supported for SQLite tables with remote pushdown), `CREATE TABLE ... AS`, `CREATE VIEW` and `DROP` / `ALTER TABLE` statements.
+
+Remote pushdown is disabled by default. It can be enabled for newly attached databases (the setting is read when the database is attached):
+
+```sql
+SET sqlite_enable_remote_pushdown = true;
+ATTACH 'sakila.db' AS sakila (TYPE SQLITE);
+```
+
+`EXPLAIN` shows the generated SQL (`Sqlite Query`), and `SET sqlite_debug_show_queries = true` also prints why a query is not pushed down.
+
+```sql
+D EXPLAIN SELECT rating, count(*), avg(length) FROM sakila.film WHERE title LIKE 'A%' GROUP BY rating ORDER BY rating;
+╭─ Sqlite Query ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ SQL:                                                                                                                                                                 │
+│ SELECT "rating", count(*) AS "count_star()", avg("length") AS "avg(length)" FROM "film" WHERE ("title" GLOB 'A*') GROUP BY "rating" ORDER BY "rating" ASC NULLS LAST │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+Queries that are plain scans of a single table are executed through the regular table scan, which reads the table in parallel (by ranges of the `rowid`). A query is a plain scan when it reads a single table, selects only columns (or `*`), filters only with comparisons of columns with constants, `IN` lists and `IS [NOT] NULL` combined with `AND` / `OR`, and has no `ORDER BY` or `OFFSET` (a `LIMIT` is fine).
+
+The translation takes the differences between DuckDB and SQLite into account, for example:
+
+* Views of the database are read with their query, like DuckDB reads them.
+* Columns are read the way the table scan reads them: `DATE` / `TIMESTAMP` columns can contain ISO strings and unix timestamps, untyped columns are read as `BLOB`, columns with a collation (e.g. `COLLATE NOCASE`) are compared byte-wise like DuckDB compares strings, and with `sqlite_all_varchar` all columns are read as `VARCHAR`.
+* SQLite's `LIKE` is case insensitive - `LIKE` with a constant pattern is translated to `GLOB`.
+* `a / b` is a floating point division, `NULLS LAST` is the default order, a scalar subquery that returns more than one row raises an error, ...
+
+Where SQLite has no built-in function with the semantics of the DuckDB function, the query uses `duckdb_*` functions that the extension registers on the SQLite connections of databases attached with remote pushdown (e.g. for casts, Unicode `lower` / `upper`, `ILIKE`, regular expressions, date parts, `date_trunc`, `date_diff`, interval arithmetic, `round`, math functions, `stddev`, `median`, `arg_max`). These functions can only be used by top-level SQL (not by the views or triggers stored in a database file), and they are not available to other SQLite clients - views (`CREATE VIEW`) are only stored with translated SQL when it does not use them, and when DuckDB reads the translated SQL back to the same result types. Otherwise a view is stored like without remote pushdown.
+
+A pushed down query is executed by SQLite, single-threaded. This is faster when SQLite can use indexes (e.g. for selective filters, joins and ordering on indexed columns) or when the query reduces the data a lot, but SQLite's query planner and execution engine are not built for analytical queries over large tables - those can be slower than executing the query in DuckDB, which is why remote pushdown is disabled by default. SQLite evaluates correlated subqueries for every row: they are only pushed down when the correlated rows can be looked up through an index (the row id, an `INTEGER PRIMARY KEY` or the leading column of an index), DuckDB decorrelates them otherwise.
+
+`CREATE TABLE ... AS` statements are only pushed down as a whole when their query only uses constructs that are translated whatever types they operate on (columns, constants, comparisons, `count` / `min` / `max`, ...). Otherwise only the query is pushed down, and DuckDB inserts its result into the new table.
+
+Known differences to executing the query in DuckDB:
+
+* SQLite has no NaN - DuckDB results that are NaN (e.g. `0 / 0`, `sqrt(-1)`) raise an error.
+* Integer overflows in arithmetic produce floating point numbers in SQLite (DuckDB raises an error). `sum` of integers raises an error when the sum does not fit into a 64-bit integer (DuckDB sums them as `HUGEINT`).
+* Floating point results of statistical aggregates (e.g. `stddev`, `avg`) can differ in the last digits.
+* Dates and timestamps with years before 1 or after 9999 cannot be represented and raise an error.
+* Values whose storage class does not match the type of their column (e.g. the real `1.5` in an `INTEGER` column) are not rejected like the table scan rejects them.
+* SQLite's string functions (e.g. `length`, `substr`) end strings at a NUL character.
+* Duplicate result column names are made unique (e.g. `i` and `i_1`), like for the result of a subquery.
+* Pushed down queries require a database that uses the UTF-8 encoding.
+* Queries are not pushed down when `default_collation` is set, and `CREATE TABLE ... AS` raises an error then.
+
 ## Building & Loading the Extension
 
 >**Tip**:

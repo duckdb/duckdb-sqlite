@@ -1,5 +1,6 @@
 add_library(
   sqlite_ext_storage OBJECT
+  sqlite_capabilities.cpp
   sqlite_catalog.cpp
   sqlite_options.cpp
   sqlite_delete.cpp

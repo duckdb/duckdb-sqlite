@@ -1,0 +1,164 @@
+# name: test/sql/remote_pushdown/remote_pushdown_constants.test
+# description: Test the serialization of constants in the remote pushdown into SQLite
+# group: [remote_pushdown]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_constants.db' AS l (TYPE SQLITE)
+
+statement ok
+SET sqlite_enable_remote_pushdown = true
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_constants.db' AS s (TYPE SQLITE)
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE t(i INTEGER, v TEXT, d DOUBLE, b BLOB, dt DATE)')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO t VALUES (1, ''a'', 1.5, x''00ff'', ''2020-01-01''), (2, ''it''''s'', -2.5, x'''', ''2021-06-15''), (3, NULL, NULL, NULL, NULL)')
+
+# the results are the same with and without remote pushdown
+foreach db l s
+
+query IIIIIIIIIIII
+SELECT i, 42, -7, 9223372036854775807, -9223372036854775808, 2.5, -0.125, 1e100, 'str', '', 'it''s', NULL FROM {db}.t ORDER BY i
+----
+1	42	-7	9223372036854775807	-9223372036854775808	2.5	-0.125	1e+100	str	(empty)	it's	NULL
+2	42	-7	9223372036854775807	-9223372036854775808	2.5	-0.125	1e+100	str	(empty)	it's	NULL
+3	42	-7	9223372036854775807	-9223372036854775808	2.5	-0.125	1e+100	str	(empty)	it's	NULL
+
+query IIIII
+SELECT i, TRUE, FALSE, NOT TRUE, i > 1 AND TRUE FROM {db}.t ORDER BY i
+----
+1	true	false	false	false
+2	true	false	false	true
+3	true	false	false	true
+
+query IIIII
+SELECT i, DATE '2020-02-29', TIMESTAMP '2020-02-29 12:34:56.789', x'00ff'::BLOB, '\x01\x02'::BLOB FROM {db}.t ORDER BY i
+----
+1	2020-02-29	2020-02-29 12:34:56.789	\x00\xFF	\x01\x02
+2	2020-02-29	2020-02-29 12:34:56.789	\x00\xFF	\x01\x02
+3	2020-02-29	2020-02-29 12:34:56.789	\x00\xFF	\x01\x02
+
+query IIIIIII
+SELECT i, 'inf'::DOUBLE, '-inf'::DOUBLE, 1.5::FLOAT, 255::UTINYINT, 65000::USMALLINT, 4000000000::UINTEGER FROM {db}.t ORDER BY i
+----
+1	inf	-inf	1.5	255	65000	4000000000
+2	inf	-inf	1.5	255	65000	4000000000
+3	inf	-inf	1.5	255	65000	4000000000
+
+query III
+SELECT i, 18446744073709551615::UBIGINT, 170141183460469231731687303715884105727::HUGEINT FROM {db}.t ORDER BY i
+----
+1	18446744073709551615	170141183460469231731687303715884105727
+2	18446744073709551615	170141183460469231731687303715884105727
+3	18446744073709551615	170141183460469231731687303715884105727
+
+query IIIII
+SELECT i, 123.456::DECIMAL(10, 3), 1::DECIMAL(5, 0), CAST(NULL AS INTEGER), NULL::VARCHAR FROM {db}.t ORDER BY i
+----
+1	123.456	1	NULL	NULL
+2	123.456	1	NULL	NULL
+3	123.456	1	NULL	NULL
+
+query IIII
+SELECT i, 'é' || v, 'ü€' || v, 'quote''d' || v FROM {db}.t ORDER BY i
+----
+1	éa	ü€a	quote'da
+2	éit's	ü€it's	quote'dit's
+3	NULL	NULL	NULL
+
+query I
+SELECT i FROM {db}.t WHERE v = 'it''s' OR d = -2.5
+----
+2
+
+query I
+SELECT i FROM {db}.t WHERE b = '\x00\xFF'::BLOB
+----
+1
+
+query I
+SELECT i FROM {db}.t WHERE i = 1.0 OR i = '2'
+----
+1
+2
+
+query I
+SELECT i FROM {db}.t WHERE d > 1 OR d < -1e10 ORDER BY i
+----
+1
+
+query IIIII
+SELECT i, i + 0.5, d * 0.1, d / 10, i - 1e-3 FROM {db}.t ORDER BY i
+----
+1	1.5	0.15000000000000002	0.15	0.999
+2	2.5	-0.25	-0.25	1.999
+3	3.5	NULL	NULL	2.999
+
+query III
+SELECT i, CASE i WHEN 1 THEN 'one' WHEN 2 THEN 'two' END, CASE WHEN d > 0 THEN d ELSE 0 END FROM {db}.t ORDER BY i
+----
+1	one	1.5
+2	two	0.0
+3	NULL	0.0
+
+query IIII
+SELECT i, coalesce(v, '-'), coalesce(d, i, 0), coalesce(NULL, i) FROM {db}.t ORDER BY i
+----
+1	a	1.5	1
+2	it's	-2.5	2
+3	-	3.0	3
+
+query IIIIII
+SELECT i, greatest(i, 2), least(d, i), greatest(v, 'b'), greatest(NULL, i), least(dt, DATE '2020-06-01') FROM {db}.t ORDER BY i
+----
+1	2	1.0	b	1	2020-01-01
+2	2	-2.5	it's	2	2020-06-01
+3	3	3.0	b	3	2020-06-01
+
+endloop
+
+query II
+EXPLAIN SELECT i, -7, 2.5, 'it''s', x'00ff'::BLOB, DATE '2020-02-29', TRUE FROM s.t
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*\(-7\).*2.5.*'it''s'.*X'00FF'.*'2020-02-29'.*, 1 AS.*
+
+# constants without a representation in SQLite are not pushed down
+query II
+EXPLAIN SELECT i, 'nan'::DOUBLE FROM s.t
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+query II
+EXPLAIN SELECT i, 170141183460469231731687303715884105727::HUGEINT FROM s.t
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+query II
+EXPLAIN SELECT i, INTERVAL 1 DAY FROM s.t
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+query II
+EXPLAIN SELECT i, TIME '10:00:00' FROM s.t
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+query II
+EXPLAIN SELECT i, [1, 2] FROM s.t
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+query II
+EXPLAIN SELECT i, DATE '10000-01-01' FROM s.t
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+query II
+EXPLAIN SELECT i, 'a' || chr(0) FROM s.t
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*

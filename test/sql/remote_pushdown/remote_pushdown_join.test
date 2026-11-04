@@ -1,0 +1,286 @@
+# name: test/sql/remote_pushdown/remote_pushdown_join.test
+# description: Test remote pushdown of joins into SQLite
+# group: [remote_pushdown]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_join.db' AS l (TYPE SQLITE)
+
+statement ok
+SET sqlite_enable_remote_pushdown = true
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_join.db' AS s (TYPE SQLITE)
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE a(i INTEGER, v TEXT, d DATE)')
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE b(i INTEGER, w TEXT)')
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE c(j INTEGER, i INTEGER)')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO a VALUES (1, ''one'', ''2020-01-01''), (2, ''two'', ''2020-02-02''), (3, ''three'', NULL), (NULL, ''null'', ''2020-04-04'')')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO b VALUES (1, ''uno''), (3, ''tres''), (3, ''drei''), (4, ''cuatro''), (NULL, ''nada'')')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO c VALUES (10, 1), (20, 4), (30, NULL)')
+
+# the results are the same with and without remote pushdown
+foreach db l s
+
+query III
+SELECT a.i, a.v, b.w FROM {db}.a JOIN {db}.b ON a.i = b.i ORDER BY a.i, b.w
+----
+1	one	uno
+3	three	drei
+3	three	tres
+
+query III
+SELECT a.i, a.v, b.w FROM {db}.a INNER JOIN {db}.b ON a.i = b.i AND b.w <> 'drei' ORDER BY a.i, b.w
+----
+1	one	uno
+3	three	tres
+
+query III
+SELECT a.i, a.v, b.w FROM {db}.a LEFT JOIN {db}.b ON a.i = b.i ORDER BY a.i, b.w
+----
+1	one	uno
+2	two	NULL
+3	three	drei
+3	three	tres
+NULL	null	NULL
+
+query II
+SELECT a.i, b.i FROM {db}.a LEFT JOIN {db}.b ON a.i = b.i WHERE b.i IS NULL ORDER BY a.i
+----
+2	NULL
+NULL	NULL
+
+query II
+SELECT x.i, y.w FROM {db}.a AS x, {db}.b AS y WHERE x.i = y.i ORDER BY 1, 2
+----
+1	uno
+3	drei
+3	tres
+
+query I
+SELECT count(*) FROM {db}.a CROSS JOIN {db}.b
+----
+20
+
+query III
+SELECT a.v, b.w, c.j FROM {db}.a JOIN {db}.b ON a.i = b.i JOIN {db}.c ON c.i = b.i ORDER BY 1, 2
+----
+one	uno	10
+
+query II
+SELECT a.v, c.j FROM {db}.a LEFT JOIN ({db}.b JOIN {db}.c ON b.i = c.i) ON a.i = b.i ORDER BY 1, 2
+----
+null	NULL
+one	10
+three	NULL
+two	NULL
+
+query II
+SELECT a.i, w FROM {db}.a JOIN {db}.b USING (i) ORDER BY 1, 2
+----
+1	uno
+3	drei
+3	tres
+
+query II
+SELECT i, v FROM {db}.a NATURAL JOIN {db}.c ORDER BY 1
+----
+1	one
+
+query III
+SELECT * FROM {db}.a SEMI JOIN {db}.b ON a.i = b.i ORDER BY i
+----
+1	one	2020-01-01
+3	three	NULL
+
+query III
+SELECT * FROM {db}.a ANTI JOIN {db}.b ON a.i = b.i ORDER BY i
+----
+2	two	2020-02-02
+NULL	null	2020-04-04
+
+query III
+SELECT a.i, a.d, b.w FROM {db}.a JOIN {db}.b ON a.i = b.i WHERE a.d > DATE '2019-12-31' ORDER BY 1, 3
+----
+1	2020-01-01	uno
+
+query II
+SELECT a.i, s.w FROM {db}.a JOIN (SELECT i, max(w) AS w FROM {db}.b GROUP BY i) s ON a.i = s.i ORDER BY 1
+----
+1	uno
+3	tres
+
+query II
+SELECT a1.i, a2.i FROM {db}.a a1 JOIN {db}.a a2 ON a1.i < a2.i ORDER BY 1, 2
+----
+1	2
+1	3
+2	3
+
+query II
+SELECT a.i, b.w FROM {db}.a JOIN {db}.b ON a.i = b.i OR b.i IS NULL ORDER BY 1, 2
+----
+1	nada
+1	uno
+2	nada
+3	drei
+3	nada
+3	tres
+NULL	nada
+
+query I
+SELECT a.i FROM {db}.a JOIN {db}.b ON true WHERE b.w = 'uno' ORDER BY 1
+----
+1
+2
+3
+NULL
+
+query I
+SELECT count(*) FROM {db}.a JOIN {db}.b ON a.i IS NOT DISTINCT FROM b.i
+----
+4
+
+query IIII
+SELECT a.*, b.w FROM {db}.a JOIN {db}.b ON a.i = b.i ORDER BY a.i, b.w
+----
+1	one	2020-01-01	uno
+3	three	NULL	drei
+3	three	NULL	tres
+
+query II
+SELECT b.* FROM {db}.a JOIN {db}.b ON a.i = b.i ORDER BY b.i, b.w
+----
+1	uno
+3	drei
+3	tres
+
+query II
+SELECT a.i, b.w FROM {db}.a, {db}.b WHERE (a.i = b.i AND b.w = 'uno') OR (a.i = b.i AND a.v = 'three') ORDER BY 1, 2
+----
+1	uno
+3	drei
+3	tres
+
+query II
+SELECT a.i, b.w FROM {db}.a, {db}.b WHERE (a.i = b.i AND b.w = 'uno') OR (a.i = b.i) ORDER BY 1, 2
+----
+1	uno
+3	drei
+3	tres
+
+query II
+SELECT a.i, b.w FROM {db}.a, {db}.b WHERE (a.i = b.i AND b.w = 'uno') OR (a.i + 1 = b.i AND a.v = 'three') ORDER BY 1, 2
+----
+1	uno
+3	cuatro
+
+# RIGHT joins are LEFT joins with the sides swapped
+query II
+SELECT a.i, b.w FROM {db}.a RIGHT JOIN {db}.b ON a.i = b.i ORDER BY b.w
+----
+NULL	cuatro
+3	drei
+NULL	nada
+3	tres
+1	uno
+
+query III
+SELECT a.v, b.w, c.j FROM {db}.a JOIN {db}.c ON a.i = c.i RIGHT JOIN {db}.b ON b.i = a.i ORDER BY b.w
+----
+NULL	cuatro	NULL
+NULL	drei	NULL
+NULL	nada	NULL
+NULL	tres	NULL
+one	uno	10
+
+query II
+SELECT a.v, b.w FROM {db}.a LEFT JOIN {db}.c ON a.i = c.i RIGHT JOIN {db}.b ON b.i = a.i AND c.j > 5 ORDER BY b.w, a.v
+----
+NULL	cuatro
+NULL	drei
+NULL	nada
+NULL	tres
+one	uno
+
+query II
+SELECT count(*), count(a.i) FROM {db}.a RIGHT JOIN {db}.b ON a.i = b.i WHERE b.i IS NOT NULL
+----
+4	3
+
+query IIII
+SELECT a.*, b.w FROM {db}.a RIGHT JOIN {db}.b ON a.i = b.i ORDER BY b.w
+----
+NULL	NULL	NULL	cuatro
+3	three	NULL	drei
+NULL	NULL	NULL	nada
+3	three	NULL	tres
+1	one	2020-01-01	uno
+
+endloop
+
+query II
+EXPLAIN SELECT a.i, a.v, b.w FROM s.a LEFT JOIN s.b ON a.i = b.i
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*LEFT JOIN "b" ON \("a"."i" = "b"."i"\).*
+
+query II
+EXPLAIN SELECT * FROM s.a SEMI JOIN s.b ON a.i = b.i
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*WHERE EXISTS \(SELECT 1 FROM "b" WHERE \("a"."i" = "b"."i"\)\)\) AS "a".*
+
+# RIGHT joins (which require SQLite 3.39) are LEFT joins with the sides swapped - unless an unqualified * expands their
+# columns
+query II
+EXPLAIN SELECT a.i, b.i FROM s.a RIGHT JOIN s.b ON a.i = b.i
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*FROM \("b" LEFT JOIN "a" ON \("a"."i" = "b"."i"\)\).*
+
+query II
+EXPLAIN SELECT * FROM s.a RIGHT JOIN s.b ON a.i = b.i
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+# FULL OUTER joins require SQLite 3.39
+
+query II
+EXPLAIN SELECT a.i, b.i FROM s.a FULL OUTER JOIN s.b ON a.i = b.i
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+# USING / NATURAL joins coalesce the join columns of a star expansion - which SQLite does not do for outer joins
+query II
+EXPLAIN SELECT * FROM s.a LEFT JOIN s.b USING (i)
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+# SQLite has no LATERAL joins - the query cannot be prepared, and is executed locally
+query II
+EXPLAIN SELECT a.i, x.k FROM s.a, (SELECT a.i + 1 AS k) x
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+# ASOF and POSITIONAL joins are DuckDB-specific
+query II
+EXPLAIN SELECT * FROM s.a POSITIONAL JOIN s.b
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+# comma joins are inner joins without a condition (a CROSS JOIN determines the join order in SQLite), and conjuncts
+# that all disjuncts have in common are factored out of a disjunction - so that SQLite can use them as join condition
+query II
+EXPLAIN SELECT a.i FROM s.a, s.b WHERE (a.i = b.i AND b.w = 'uno') OR (a.i = b.i AND a.v = 'three')
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*FROM \("a" JOIN "b"\) WHERE \(\("a"."i" = "b"."i"\) AND \(\(\("b"."w" = 'uno'\)\) OR \(\("a"."v" = 'three'\)\)\)\).*

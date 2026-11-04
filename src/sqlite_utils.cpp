@@ -1,6 +1,9 @@
 #include "sqlite_utils.hpp"
 
+#include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/types/date.hpp"
+#include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
 
@@ -176,6 +179,122 @@ bool SQLiteUtils::AllVarchar(ClientContext &context) {
 		return false;
 	}
 	return BooleanValue::Get(all_varchar);
+}
+
+SQLiteValue SQLiteUtils::ReadColumn(sqlite3_stmt *stmt, int col) {
+	SQLiteValue result;
+	result.type = sqlite3_column_type(stmt, col);
+	switch (result.type) {
+	case SQLITE_INTEGER:
+		result.integer = sqlite3_column_int64(stmt, col);
+		break;
+	case SQLITE_FLOAT:
+		result.real = sqlite3_column_double(stmt, col);
+		break;
+	case SQLITE_TEXT:
+		result.data = const_char_ptr_cast(sqlite3_column_text(stmt, col));
+		result.size = NumericCast<idx_t>(sqlite3_column_bytes(stmt, col));
+		break;
+	case SQLITE_BLOB:
+		result.data = const_char_ptr_cast(sqlite3_column_blob(stmt, col));
+		result.size = NumericCast<idx_t>(sqlite3_column_bytes(stmt, col));
+		break;
+	default:
+		break;
+	}
+	return result;
+}
+
+SQLiteValue SQLiteUtils::ReadValue(sqlite3_value *value) {
+	SQLiteValue result;
+	result.type = sqlite3_value_type(value);
+	switch (result.type) {
+	case SQLITE_INTEGER:
+		result.integer = sqlite3_value_int64(value);
+		break;
+	case SQLITE_FLOAT:
+		result.real = sqlite3_value_double(value);
+		break;
+	case SQLITE_TEXT:
+		result.data = const_char_ptr_cast(sqlite3_value_text(value));
+		result.size = NumericCast<idx_t>(sqlite3_value_bytes(value));
+		break;
+	case SQLITE_BLOB:
+		result.data = const_char_ptr_cast(sqlite3_value_blob(value));
+		result.size = NumericCast<idx_t>(sqlite3_value_bytes(value));
+		break;
+	default:
+		break;
+	}
+	return result;
+}
+
+static timestamp_t SQLiteEpochToTimestamp(const SQLiteValue &value) {
+	if (value.type == SQLITE_INTEGER) {
+		return Timestamp::FromEpochSeconds(value.integer);
+	}
+	return Timestamp::FromEpochMicroSeconds(Cast::Operation<double, int64_t>(value.real * 1000000.0));
+}
+
+//! The text representation of a value
+static string SQLiteValueText(const SQLiteValue &value) {
+	switch (value.type) {
+	case SQLITE_INTEGER:
+		return to_string(value.integer);
+	case SQLITE_FLOAT:
+		return Value::DOUBLE(value.real).ToString();
+	default:
+		return string(value.data ? value.data : "", value.size);
+	}
+}
+
+Value SQLiteUtils::ToDuckDBValue(const SQLiteValue &value, const LogicalType &type) {
+	if (value.type == SQLITE_NULL) {
+		return Value(type);
+	}
+	switch (type.id()) {
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIMESTAMP: {
+		bool is_date = type.id() == LogicalTypeId::DATE;
+		switch (value.type) {
+		case SQLITE_INTEGER:
+		case SQLITE_FLOAT: {
+			auto ts = SQLiteEpochToTimestamp(value);
+			return is_date ? Value::DATE(Timestamp::GetDate(ts)) : Value::TIMESTAMP(ts);
+		}
+		case SQLITE_TEXT:
+			if (is_date) {
+				return Value::DATE(Date::FromCString(value.data, value.size));
+			}
+			return Value::TIMESTAMP(Timestamp::FromCString(value.data, value.size));
+		default:
+			throw ConversionException("Cannot convert a SQLite BLOB value to %s", type.ToString());
+		}
+	}
+	case LogicalTypeId::VARCHAR:
+		// text and blobs are read as their bytes
+		return Value(SQLiteValueText(value));
+	case LogicalTypeId::BLOB:
+		return Value::BLOB_RAW(SQLiteValueText(value));
+	default:
+		break;
+	}
+	Value source;
+	switch (value.type) {
+	case SQLITE_INTEGER:
+		source = Value::BIGINT(value.integer);
+		break;
+	case SQLITE_FLOAT:
+		source = Value::DOUBLE(value.real);
+		break;
+	case SQLITE_TEXT:
+		source = Value(string(value.data, value.size));
+		break;
+	default:
+		source = Value::BLOB_RAW(string(value.data, value.size));
+		break;
+	}
+	return source.DefaultCastAs(type);
 }
 
 } // namespace duckdb

@@ -13,6 +13,15 @@
 
 namespace duckdb {
 
+//! A value as it is stored in SQLite - data and size are set for TEXT and BLOB values
+struct SQLiteValue {
+	int type = SQLITE_NULL;
+	int64_t integer = 0;
+	double real = 0;
+	const char *data = nullptr;
+	idx_t size = 0;
+};
+
 class SQLiteUtils {
 public:
 	static void Check(int rc, sqlite3 *db);
@@ -33,6 +42,14 @@ public:
 
 	//! The value of sqlite_all_varchar, false when it is not set or NULL
 	static bool AllVarchar(ClientContext &context);
+
+	//! Convert a SQLite value to a DuckDB type - integers and floats are read as unix timestamps for DATE and
+	//! TIMESTAMP (like the table scan reads them), other conversions use DuckDB's casts
+	static Value ToDuckDBValue(const SQLiteValue &value, const LogicalType &type);
+	//! Read the value of a result column of a statement
+	static SQLiteValue ReadColumn(sqlite3_stmt *stmt, int col);
+	//! Read the value of a function argument
+	static SQLiteValue ReadValue(sqlite3_value *value);
 };
 
 struct RowIdInfo {

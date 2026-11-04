@@ -1,0 +1,53 @@
+# name: test/sql/storage/attach_error_parameters.test
+# description: The values of query parameters are not part of error messages
+# group: [storage]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/attach_error_parameters.db' AS s (TYPE SQLITE)
+
+statement ok
+FROM sqlite_query('s', 'CREATE TABLE t(i INTEGER PRIMARY KEY, v TEXT)')
+
+statement ok
+FROM sqlite_query('s', 'INSERT INTO t VALUES (1, ''a'')')
+
+# the value of a parameter of a filter that is pushed down into the SQLite query
+statement ok
+PREPARE p AS SELECT i FROM s.t WHERE v = $1
+
+query I
+EXECUTE p('a')
+----
+1
+
+statement ok
+BEGIN
+
+query I
+SELECT count(*) FROM s.t
+----
+1
+
+statement ok
+FROM sqlite_query('s', 'DROP TABLE t')
+
+statement error
+EXECUTE p('secret_value')
+----
+<!REGEX>:.*secret_value.*
+
+statement ok
+ROLLBACK
+
+# the parameters of sqlite_query are bound
+statement error
+FROM sqlite_query('s', 'INSERT INTO t VALUES (1, ?) RETURNING v', params := row('secret_value'))
+----
+<!REGEX>:.*secret_value.*
+
+statement error
+FROM sqlite_query('s', 'INSERT INTO t VALUES (1, ?) RETURNING v', params := row('secret_value'))
+----
+UNIQUE constraint failed: t.i

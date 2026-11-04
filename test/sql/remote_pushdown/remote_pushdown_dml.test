@@ -1,0 +1,253 @@
+# name: test/sql/remote_pushdown/remote_pushdown_dml.test
+# description: Test remote pushdown of UPDATE / DELETE / INSERT statements into SQLite
+# group: [remote_pushdown]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/rp_dml_l.db' AS l (TYPE SQLITE)
+
+statement ok
+SET sqlite_enable_remote_pushdown = true
+
+statement ok
+ATTACH '{TEST_DIR}/rp_dml_s.db' AS s (TYPE SQLITE)
+
+foreach db l s
+
+statement ok
+FROM sqlite_query({db}, 'CREATE TABLE t(i INTEGER PRIMARY KEY, v TEXT, d DOUBLE, nc TEXT COLLATE NOCASE)')
+
+statement ok
+FROM sqlite_query({db}, 'CREATE TABLE u(i INTEGER, w TEXT)')
+
+statement ok
+INSERT INTO {db}.t VALUES (1, 'one', 1.5, 'Abc'), (2, 'two', 2.5, 'abc'), (3, 'three', NULL, 'b'), (4, NULL, 4.0, NULL)
+
+statement ok
+INSERT INTO {db}.u VALUES (1, 'uno'), (3, 'tres'), (5, 'cinco')
+
+# UPDATE
+query I
+UPDATE {db}.t SET v = v || '!' WHERE i > 2
+----
+2
+
+query I
+UPDATE {db}.t SET d = i * 2 WHERE nc = 'abc'
+----
+1
+
+query I
+UPDATE {db}.t SET v = u.w FROM {db}.u WHERE u.i = t.i
+----
+2
+
+query IIII
+SELECT * FROM {db}.t ORDER BY i
+----
+1	uno	1.5	Abc
+2	two	4.0	abc
+3	tres	NULL	b
+4	NULL	4.0	NULL
+
+query I
+UPDATE {db}.t SET d = 0 WHERE i IN (SELECT i + 1 FROM {db}.u)
+----
+2
+
+# DELETE
+query I
+DELETE FROM {db}.t WHERE d = 0
+----
+2
+
+query I
+DELETE FROM {db}.u USING {db}.t WHERE u.i = t.i AND t.v = 'uno'
+----
+1
+
+query II
+SELECT * FROM {db}.u ORDER BY i
+----
+3	tres
+5	cinco
+
+# INSERT
+query I
+INSERT INTO {db}.u VALUES (10, 'ten'), (11, 'eleven')
+----
+2
+
+query I
+INSERT INTO {db}.u SELECT i + 100, v FROM {db}.t WHERE i < 4
+----
+2
+
+# values are converted to the types of the columns
+query I
+INSERT INTO {db}.u VALUES ('20', 20)
+----
+1
+
+query III
+SELECT i, w, typeof(w) FROM {db}.u ORDER BY i
+----
+3	tres	VARCHAR
+5	cinco	VARCHAR
+10	ten	VARCHAR
+11	eleven	VARCHAR
+20	20	VARCHAR
+101	uno	VARCHAR
+103	tres	VARCHAR
+
+query II
+SELECT * FROM sqlite_query({db}, 'SELECT i, typeof(w) FROM u WHERE i = 20')
+----
+20	text
+
+# columns that are not inserted into get their SQLite default
+query I
+INSERT INTO {db}.t (v) VALUES ('auto')
+----
+1
+
+query II
+SELECT i, v FROM {db}.t WHERE v = 'auto'
+----
+4	auto
+
+query I
+INSERT INTO {db}.t (i, v) VALUES (DEFAULT, 'default')
+----
+1
+
+query II
+SELECT i, v FROM {db}.t WHERE v = 'default'
+----
+5	default
+
+# constraint violations raise an error in both
+statement error
+INSERT INTO {db}.t VALUES (1, 'duplicate', NULL, NULL)
+----
+UNIQUE constraint failed
+
+endloop
+
+# the statements were executed in SQLite
+query II
+EXPLAIN UPDATE s.t SET v = v || '!' WHERE i > 2
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*UPDATE "t" SET "v" = \("v" \|\| '!'\) WHERE \("i" > 2\).*
+
+query II
+EXPLAIN UPDATE s.t SET v = u.w FROM s.u WHERE u.i = t.i
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*UPDATE "t" SET "v" = "u"."w" FROM "u" WHERE \("u"."i" = "t"."i"\).*
+
+query II
+EXPLAIN DELETE FROM s.u USING s.t WHERE u.i = t.i AND t.v = 'uno'
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*DELETE FROM "u" WHERE EXISTS \(SELECT 1 FROM "t" WHERE \(\("u"."i" = "t"."i"\) AND \("t"."v" = 'uno'\)\)\).*
+
+query II
+EXPLAIN INSERT INTO s.u VALUES ('20', 20)
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*INSERT INTO "u" \("i", "w"\) VALUES \(20, '20'\).*
+
+# RETURNING is only supported when the statement is executed in SQLite
+query II
+UPDATE s.t SET v = 'updated' WHERE i = 1 RETURNING i, v
+----
+1	updated
+
+statement error
+UPDATE l.t SET v = 'updated' WHERE i = 1 RETURNING i, v
+----
+RETURNING clause not yet supported
+
+query IIII
+DELETE FROM s.t WHERE i = 1 RETURNING *
+----
+1	updated	1.5	Abc
+
+query II
+INSERT INTO s.u VALUES (30, 'thirty') RETURNING i * 2 AS x, upper(w)
+----
+60	THIRTY
+
+# ON CONFLICT
+query I
+INSERT INTO s.t VALUES (3, 'x', NULL, NULL) ON CONFLICT DO NOTHING
+----
+0
+
+# like in DuckDB, ON CONFLICT requires a unique constraint
+statement error
+INSERT INTO s.u VALUES (31, 'x') ON CONFLICT DO NOTHING
+----
+There are no UNIQUE/PRIMARY KEY constraints
+
+query I
+INSERT OR IGNORE INTO s.t VALUES (4, 'dup', NULL, NULL), (7, 'seven', NULL, NULL)
+----
+1
+
+query I
+INSERT OR REPLACE INTO s.t VALUES (4, 'replaced', 2.0, 'x'), (8, 'eight', NULL, NULL)
+----
+2
+
+query I
+INSERT INTO s.t VALUES (3, 'new', NULL, NULL) ON CONFLICT (i) DO UPDATE SET v = excluded.v || '-' || v
+----
+1
+
+query IIII
+SELECT * FROM s.t ORDER BY i
+----
+3	new-tres	NULL	b
+4	replaced	2.0	x
+5	default	NULL	NULL
+7	seven	NULL	NULL
+8	eight	NULL	NULL
+
+query II
+EXPLAIN INSERT INTO s.t VALUES (3, 'new', NULL, NULL) ON CONFLICT (i) DO UPDATE SET v = excluded.v || '-' || v
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*ON CONFLICT \("i"\) DO UPDATE SET "v" = .*"excluded"."v".*
+
+# SQLite updates a row twice when it conflicts twice in one statement - these are executed locally
+query II
+EXPLAIN INSERT INTO s.t VALUES (3, 'a', NULL, NULL), (3, 'b', NULL, NULL) ON CONFLICT (i) DO UPDATE SET v = excluded.v
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+# SQLite has no SET DEFAULT - this is executed locally
+query II
+EXPLAIN UPDATE s.t SET v = DEFAULT WHERE i = 3
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+query I
+UPDATE s.t SET v = DEFAULT WHERE i = 3
+----
+1
+
+query I
+SELECT v FROM s.t WHERE i = 3
+----
+NULL
+
+# read-only databases do not push down DML
+statement ok
+DETACH s
+
+statement ok
+ATTACH '{TEST_DIR}/rp_dml_s.db' AS s (TYPE SQLITE, READ_ONLY)
+
+statement error
+UPDATE s.t SET v = 'x'
+----
+read-only

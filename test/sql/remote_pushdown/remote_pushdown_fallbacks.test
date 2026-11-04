@@ -1,0 +1,127 @@
+# name: test/sql/remote_pushdown/remote_pushdown_fallbacks.test
+# description: Queries and statements with constructs that SQLite does not support are executed like DuckDB does
+# group: [remote_pushdown]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_fallbacks_l.db' AS l (TYPE SQLITE)
+
+statement ok
+SET sqlite_enable_remote_pushdown = true
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_fallbacks_s.db' AS s (TYPE SQLITE)
+
+foreach db l s
+
+statement ok
+FROM sqlite_query({db}, 'CREATE TABLE t(i INTEGER, d DATE)')
+
+statement ok
+FROM sqlite_query({db}, 'INSERT INTO t VALUES (1, ''2020-01-01''), (2, 1577923200), (3, ''2020-01-01''), (4, NULL)')
+
+statement ok
+FROM sqlite_query({db}, 'CREATE VIEW v AS SELECT i * 10 AS j, d FROM t')
+
+statement ok
+FROM sqlite_query({db}, 'CREATE VIEW v2(a, b) AS SELECT j, j + 1 FROM v')
+
+statement ok
+FROM sqlite_query({db}, 'CREATE TABLE g(a INTEGER, b INTEGER GENERATED ALWAYS AS (a * 2) VIRTUAL, c INTEGER)')
+
+statement ok
+FROM sqlite_query({db}, 'INSERT INTO g(a, c) VALUES (1, 5), (2, 6)')
+
+statement ok
+FROM sqlite_query({db}, 'CREATE TABLE g2(a INTEGER, b INTEGER, c INTEGER)')
+
+statement ok
+FROM sqlite_query({db}, 'INSERT INTO g2 VALUES (1, 9, 5), (2, 4, 6)')
+
+# CREATE TABLE AS with a LATERAL subquery
+statement ok
+CREATE TABLE {db}.lat AS SELECT t.i, l.j FROM {db}.t, LATERAL (SELECT t.i AS j) l
+
+statement ok
+CREATE TABLE {db}.lat2 AS SELECT t.i, l.j FROM {db}.t JOIN LATERAL (SELECT t2.i AS j FROM {db}.t t2 WHERE t2.i < t.i) l ON true
+
+query II
+SELECT count(*), sum(j) FROM {db}.lat
+----
+4	10
+
+query II
+SELECT count(*), sum(j) FROM {db}.lat2
+----
+6	10
+
+# views are read with their query
+query III
+SELECT count(*), sum(j), count(DISTINCT d) FROM {db}.v
+----
+4	100	2
+
+query II
+SELECT * FROM {db}.v2 ORDER BY a
+----
+10	11
+20	21
+30	31
+40	41
+
+query II
+SELECT d, count(*) FROM {db}.v GROUP BY d ORDER BY d
+----
+2020-01-01	2
+2020-01-02	1
+NULL	1
+
+# generated columns are not read
+query II
+SELECT * FROM {db}.g ORDER BY a
+----
+1	5
+2	6
+
+query III
+SELECT * FROM {db}.g NATURAL JOIN {db}.g2 ORDER BY a
+----
+1	5	9
+2	6	4
+
+# min / max / arg_max of the n smallest / largest values return lists
+query III
+SELECT min(i, 2), max(i, 2), arg_max(i, i, 2) FROM {db}.t
+----
+[1, 2]	[4, 3]	[4, 3]
+
+# the offsets of ROWS / GROUPS frames are converted to integers
+query II
+SELECT i, sum(i) OVER (ORDER BY i ROWS BETWEEN 1.5 PRECEDING AND CURRENT ROW) FROM {db}.t ORDER BY i
+----
+1	1
+2	3
+3	6
+4	9
+
+query II
+SELECT i, sum(i) OVER (ORDER BY i GROUPS BETWEEN 1.4 PRECEDING AND 0.6 FOLLOWING) FROM {db}.t ORDER BY i
+----
+1	3
+2	6
+3	9
+4	7
+
+endloop
+
+# the queries are executed in SQLite
+query II
+EXPLAIN SELECT sum(j) FROM s.v
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*FROM \(SELECT \("i" \* 10\) AS "j".*
+
+query II
+EXPLAIN SELECT i, sum(i) OVER (ORDER BY i ROWS BETWEEN 1.5 PRECEDING AND CURRENT ROW) FROM s.t
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*ROWS BETWEEN 2 PRECEDING AND CURRENT ROW.*
