@@ -203,11 +203,12 @@ optional_ptr<CatalogEntry> SQLiteTransaction::GetCatalogEntry(const string &entr
 		CreateTableInfo info(sqlite_catalog.GetMainSchema(), Identifier(entry_name));
 		bool all_varchar = SQLiteUtils::AllVarchar(*context.lock());
 		vector<bool> utf8_text_affinity;
-		GetDB().GetTableInfo(entry_name, info.columns, info.constraints, all_varchar, utf8_text_affinity);
+		string rowid_name;
+		GetDB().GetTableInfo(entry_name, info.columns, info.constraints, all_varchar, utf8_text_affinity, rowid_name);
 		D_ASSERT(!info.columns.empty());
 
 		auto table = make_uniq<SQLiteTableEntry>(sqlite_catalog, sqlite_catalog.GetMainSchema(), info, all_varchar,
-		                                         std::move(utf8_text_affinity));
+		                                         std::move(utf8_text_affinity), std::move(rowid_name));
 		if (sqlite_catalog.options.remote_pushdown) {
 			// only the SQL that remote pushdown generates depends on these - they are not read otherwise, as they
 			// take several statements per table

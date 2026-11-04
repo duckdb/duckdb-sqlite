@@ -13,15 +13,18 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 
 namespace duckdb {
+class SQLiteDB;
 
 class SQLiteTableEntry : public TableCatalogEntry {
 public:
 	SQLiteTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info, bool all_varchar,
-	                 vector<bool> utf8_text_affinity);
+	                 vector<bool> utf8_text_affinity, string rowid_name);
 
 	bool all_varchar;
 	//! Whether each column has TEXT affinity in a UTF-8 database
 	vector<bool> utf8_text_affinity;
+	//! The name that addresses the row id in scans, empty if columns hide it
+	string rowid_name;
 
 	//! The metadata that is only used by remote pushdown - it is only read from SQLite (has_pushdown_info) for
 	//! databases attached with sqlite_enable_remote_pushdown
@@ -49,6 +52,10 @@ public:
 
 	void BindUpdateConstraints(Binder &binder, LogicalGet &get, LogicalProjection &proj, LogicalUpdate &update,
 	                           ClientContext &context) override;
+
+	//! The name by which UPDATE and DELETE address the row ids that a scan of this entry read. Throws if the table
+	//! changed since the entry was read
+	string GetWriteRowIdName(SQLiteDB &db) const;
 
 	static dbconnector::attached::AttachedTable Lookup(ClientContext &ctx, QualifiedName name);
 

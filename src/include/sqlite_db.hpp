@@ -51,8 +51,9 @@ public:
 
 	vector<string> GetEntries(string entry_type);
 	CatalogType GetEntryType(const string &name);
+	//! Also gets the name that addresses the row id of the table (see TryGetRowIdName), empty if columns hide it
 	void GetTableInfo(const string &table_name, ColumnList &columns, vector<unique_ptr<Constraint>> &constraints,
-	                  bool all_varchar, vector<bool> &utf8_text_affinity);
+	                  bool all_varchar, vector<bool> &utf8_text_affinity, string &rowid_name);
 	//! The columns that the rows of a table can be looked up by - the row id, and the leading columns of indexes -
 	//! whether a unique index (or primary key) compares a column with a collation other than BINARY, and whether the
 	//! table has generated columns
