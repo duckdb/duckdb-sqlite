@@ -952,6 +952,14 @@ bool SQLiteCapabilities::SupportsPushdown(const ParsedExpression &expr) {
 			    DoubleValue::Get(*quantile_value) > 1) {
 				return false;
 			}
+			// DuckDB computes the index of a discrete quantile given as a DOUBLE with floor(n - n * q), which depends
+			// on whether the compiler contracts it to a fused multiply-subtract (e.g. 10 - 10 * 0.8 with GCC on
+			// arm64) - the pushed down quantile can then select a different value. A DECIMAL quantile is computed
+			// with integer arithmetic, and n * q is exact for an integer one (0 or 1)
+			bool discrete = function_name == "quantile" || function_name == "quantile_disc";
+			if (discrete && quantile.type().id() != LogicalTypeId::DECIMAL && !quantile.type().IsIntegral()) {
+				return false;
+			}
 		}
 		if ((function_name == "count_star" && !children.empty()) || (function_name == "count" && children.size() > 1)) {
 			return false;

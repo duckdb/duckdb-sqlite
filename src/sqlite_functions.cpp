@@ -1753,8 +1753,8 @@ static void SQLiteQuantileFinal(sqlite3_context *context) {
 			Hugeint::TryCast((wide_n * state->scaling - wide_n * state->integral) / state->scaling, result);
 			floored = NumericCast<idx_t>(result);
 		} else {
-			// a separate statement like in DuckDB - n - n * q in one expression can be contracted to a fused
-			// multiply-subtract, which rounds differently
+			// like in DuckDB - the result can depend on whether n - n * q is contracted to a fused multiply-subtract,
+			// so only quantiles for which n * q is exact (0, 0.5 for the median of strings, 1) are pushed down
 			const auto scaled_q = double(n) * state->quantile;
 			floored = idx_t(std::floor(double(n) - scaled_q));
 		}
