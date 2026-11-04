@@ -93,23 +93,48 @@ SELECT quantile_cont(i, 0.8), quantile_cont(i, 0.33), median(i) FROM {db}.t
 
 endloop
 
-# the index of a discrete quantile can depend on the platform DuckDB is built for (e.g. 10 - 10 * 0.8 is computed with
-# a fused multiply-subtract on some), the pushed down quantile is computed the same way
-statement ok
-CREATE TEMPORARY TABLE quantiles_l AS SELECT quantile_disc(i, 0.8::DOUBLE) AS a, quantile_disc(i, 0.6::DOUBLE) AS b, quantile_disc(i, 0.2::DOUBLE) AS c FROM l.t
-
-statement ok
-CREATE TEMPORARY TABLE quantiles_s AS SELECT quantile_disc(i, 0.8::DOUBLE) AS a, quantile_disc(i, 0.6::DOUBLE) AS b, quantile_disc(i, 0.2::DOUBLE) AS c FROM s.t
-
-query I
-SELECT count(*) FROM (SELECT * FROM quantiles_l EXCEPT SELECT * FROM quantiles_s)
-----
-0
-
+# the index of a discrete DOUBLE quantile can depend on the platform DuckDB is built for (e.g. 10 - 10 * 0.8 is
+# computed with a fused multiply-subtract on some), such quantiles are not pushed down
 query II
 EXPLAIN SELECT quantile_disc(i, 0.8::DOUBLE) FROM s.t
 ----
-physical_plan	<REGEX>:(?s).*Sqlite Query.*duckdb_quantile_disc\("i", 0\.8\).*
+physical_plan	<!REGEX>:(?s).*duckdb_quantile_disc.*
+
+query II
+EXPLAIN SELECT quantile(i, 0.2::FLOAT) FROM s.t
+----
+physical_plan	<!REGEX>:(?s).*duckdb_quantile_disc.*
+
+# DECIMAL quantiles are computed exactly, integer ones and the median of strings (0.5) have an exact n * q
+query II
+EXPLAIN SELECT quantile_disc(i, 0.8) FROM s.t
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*duckdb_quantile_disc\("i", '0\.8'\).*
+
+query II
+EXPLAIN SELECT quantile_disc(i, 1) FROM s.t
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*duckdb_quantile_disc\("i", 1\.0\).*
+
+query II
+EXPLAIN SELECT median(s) FROM s.t
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*duckdb_quantile_disc\("s", 0\.5\).*
+
+foreach db l s
+
+query III
+SELECT quantile_disc(i, 0), quantile_disc(i, 1), median(s) FROM {db}.t
+----
+1	10	a
+
+endloop
+
+# the continuous quantiles are pushed down for DOUBLE quantiles - the index is (n - 1) * q (a single rounding)
+query II
+EXPLAIN SELECT quantile_cont(i, 0.8::DOUBLE) FROM s.t
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*duckdb_quantile_cont\("i", 0\.8\).*
 
 foreach db l s
 
