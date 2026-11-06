@@ -82,10 +82,11 @@ public:
 		return capabilities.SupportsStatementQuery(node);
 	}
 	unique_ptr<TableRef> RemoteExecute(ClientContext &context, unique_ptr<SQLStatement> statement) override;
+	//! Whether the database uses the UTF-8 encoding, read once
+	bool HasUTF8Encoding(ClientContext &context);
 
 private:
 	void DropSchema(ClientContext &context, DropInfo &info) override;
-	bool HasUTF8Encoding(ClientContext &context);
 
 private:
 	unique_ptr<SQLiteSchemaEntry> main_schema;

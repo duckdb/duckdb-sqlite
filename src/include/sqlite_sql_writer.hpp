@@ -61,6 +61,13 @@ private:
 	string reason;
 };
 
+//! A relation of a FROM clause - the name it is bound to, and the names and types of its columns
+struct SQLiteRelation {
+	string binding;
+	vector<string> names;
+	vector<LogicalType> types;
+};
+
 //! The result of serializing a query or statement for SQLite
 struct SQLiteWriterResult {
 	//! Statements executed before the main statement (e.g. creating the table of a CREATE TABLE AS)
@@ -118,6 +125,16 @@ private:
 	LogicalType InferOuterColumnType(const ColumnRefExpression &column_ref);
 	//! The result types and names of a query (empty if they cannot be determined)
 	vector<LogicalType> InferQueryTypes(const QueryNode &node, vector<string> *names = nullptr);
+	//! As InferQueryTypes, for a part of the written query - which lives as long as the writer, so it is bound once
+	vector<LogicalType> InferQueryTypesCached(const QueryNode &node, vector<string> *names = nullptr);
+	//! The result types and names of the CTE a reference refers to (empty if there is none)
+	vector<LogicalType> InferCTETypes(const BaseTableRef &ref, vector<string> &names);
+	//! The types of the columns of a VALUES list of the written query
+	vector<LogicalType> InferValuesTypes(const ExpressionListRef &ref);
+	//! The relations that an item of a FROM clause binds - false if the columns of one cannot be determined
+	bool CollectRelations(const TableRef &ref, vector<SQLiteRelation> &relations);
+	//! The type of an expression that is determined without binding a probe query
+	bool TryInferTypeWithoutProbe(const ParsedExpression &expr, LogicalType &result);
 	void CollectScopeTables(const TableRef &ref, vector<reference<const BaseTableRef>> &tables, bool &only_base_tables);
 	optional_ptr<TableCatalogEntry> FindBindingTable(const Identifier &binding);
 
@@ -191,7 +208,9 @@ private:
 	string WriteIntervalArithmetic(const ParsedExpression &value, const ParsedExpression &interval, bool subtract);
 	string WriteArithmetic(const FunctionExpression &func, const string &name,
 	                       const vector<FunctionArgument> &children);
-	string WriteDivision(const ParsedExpression &left, const ParsedExpression &right, bool integer_division);
+	//! overflow_minimum is the minimum of the type of an integer division, which overflows when divided by -1
+	string WriteDivision(const ParsedExpression &left, const ParsedExpression &right, bool integer_division,
+	                     const string &overflow_minimum = string());
 	string WriteLike(const string &name, const vector<FunctionArgument> &children);
 	string WriteWindow(const WindowExpression &window);
 	string WriteOperator(const OperatorExpression &op);
@@ -202,9 +221,11 @@ private:
 	//! Verify that SQLite can evaluate a (correlated) subquery efficiently
 	void VerifyCorrelatedSubquery(const QueryNode &node);
 	string WriteDisjunction(const ConjunctionExpression &disjunction);
-	string WriteCast(const ParsedExpression &child, const LogicalType &target_type, bool try_cast);
+	//! result_value: the cast is in the select list of the result (see result_value)
+	string WriteCast(const ParsedExpression &child, const LogicalType &target_type, bool try_cast,
+	                 bool result_value = false);
 	string WriteCast(const string &child_str, const LogicalType &source_type, const LogicalType &target_type,
-	                 bool try_cast = false);
+	                 bool try_cast = false, bool result_value = false);
 	//! Write an expression converted to a type (e.g. the result type of a CASE)
 	string WriteAs(const ParsedExpression &expr, const LogicalType &target_type);
 	//! The common type that DuckDB converts a set of expressions to (e.g. the arguments of COALESCE)
@@ -226,6 +247,8 @@ private:
 	vector<vector<reference<const unique_ptr<TableRef>>>> table_scopes;
 	//! Cache of inferred expression types
 	unordered_map<const ParsedExpression *, LogicalType> type_cache;
+	//! Cache of the result types and names of the queries, CTEs and VALUES lists of the written query
+	unordered_map<const void *, pair<vector<LogicalType>, vector<string>>> query_type_cache;
 	//! Rewritten copies of query nodes - kept alive while writing, the type cache refers to their expressions
 	vector<unique_ptr<QueryNode>> owned_nodes;
 	vector<unique_ptr<TableRef>> owned_refs;
@@ -241,6 +264,11 @@ private:
 	//! The columns of the target of the DML statement that the statement reads
 	case_insensitive_set_t dml_read_columns;
 	idx_t dml_scope = 0;
+	//! The query whose rows are returned to DuckDB, which reads its sums and casts that SQLite cannot represent as text
+	optional_ptr<const QueryNode> result_node;
+	//! Whether the expression that is being written is a sum or cast in the select list of the result - which returns
+	//! the values that SQLite cannot represent as their text
+	bool result_value = false;
 	//! Whether column references are written without their table (in a RETURNING list)
 	bool unqualified_columns = false;
 	//! Whether the select list of the SELECT that is being written has an unqualified *

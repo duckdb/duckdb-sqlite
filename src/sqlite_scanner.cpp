@@ -71,8 +71,10 @@ static unique_ptr<FunctionData> SqliteBind(ClientContext &context, TableFunction
 	vector<unique_ptr<Constraint>> constraints;
 
 	result->all_varchar = SQLiteUtils::AllVarchar(context);
-	db.GetTableInfo(result->table_name, columns, constraints, result->all_varchar, result->utf8_text_affinity,
-	                result->rowid_name);
+	SQLiteTableShape shape;
+	db.GetTableInfo(result->table_name, db.IsUTF8(), columns, constraints, result->all_varchar,
+	                result->utf8_text_affinity, shape);
+	result->rowid_name = shape.rowid_name;
 	for (auto &column : columns.Logical()) {
 		names.emplace_back(column.GetName());
 		return_types.push_back(column.GetType());

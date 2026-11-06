@@ -10,10 +10,45 @@
 namespace duckdb {
 
 SQLiteTableEntry::SQLiteTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info,
-                                   bool all_varchar, vector<bool> utf8_text_affinity_p, string rowid_name_p)
+                                   bool all_varchar, vector<bool> utf8_text_affinity_p, SQLiteTableShape shape)
     : TableCatalogEntry(catalog, schema, info), all_varchar(all_varchar),
-      utf8_text_affinity(std::move(utf8_text_affinity_p)), rowid_name(std::move(rowid_name_p)),
+      utf8_text_affinity(std::move(utf8_text_affinity_p)), rowid_name(std::move(shape.rowid_name)),
+      integer_primary_key(std::move(shape.integer_primary_key)), generated_columns(shape.generated_columns),
       columns(std::move(info.columns)) {
+}
+
+void SQLiteTableEntry::LoadIndexes(ClientContext &context) {
+	if (indexes_loaded) {
+		return;
+	}
+	SQLiteTableShape shape;
+	shape.rowid_name = rowid_name;
+	shape.integer_primary_key = integer_primary_key;
+	auto &db = Transaction::Get(context, catalog).Cast<SQLiteTransaction>().GetDB();
+	indexed_columns = db.GetIndexedColumns(name.GetIdentifierName(), shape, non_binary_unique_key);
+	indexes_loaded = true;
+}
+
+const case_insensitive_set_t &SQLiteTableEntry::GetIndexedColumns(ClientContext &context) {
+	lock_guard<mutex> guard(metadata_lock);
+	LoadIndexes(context);
+	return indexed_columns;
+}
+
+bool SQLiteTableEntry::HasNonBinaryUniqueKey(ClientContext &context) {
+	lock_guard<mutex> guard(metadata_lock);
+	LoadIndexes(context);
+	return non_binary_unique_key;
+}
+
+bool SQLiteTableEntry::GetRowIdInfo(SQLiteDB &db, RowIdInfo &info) {
+	lock_guard<mutex> guard(metadata_lock);
+	if (!row_id_info_loaded) {
+		has_row_id_info = db.GetRowIdInfo(name.GetIdentifierName(), rowid_name, row_id_info);
+		row_id_info_loaded = true;
+	}
+	info = row_id_info;
+	return has_row_id_info;
 }
 
 const ColumnList &SQLiteTableEntry::GetColumns() const {
@@ -44,7 +79,7 @@ TableFunction SQLiteTableEntry::GetScanFunction(ClientContext &context, unique_p
 	auto &db = transaction.GetDB();
 
 	result->rowid_name = rowid_name;
-	if (!db.GetRowIdInfo(name.GetIdentifierName(), result->rowid_name, result->row_id_info)) {
+	if (!GetRowIdInfo(db, result->row_id_info)) {
 		result->rows_per_group = optional_idx();
 	}
 
@@ -89,7 +124,7 @@ TableStorageInfo SQLiteTableEntry::GetStorageInfo(ClientContext &context) {
 	TableStorageInfo result;
 
 	RowIdInfo info;
-	if (!db.GetRowIdInfo(name.GetIdentifierName(), rowid_name, info)) {
+	if (!GetRowIdInfo(db, info)) {
 		// probably
 		result.cardinality = 10000;
 	} else {

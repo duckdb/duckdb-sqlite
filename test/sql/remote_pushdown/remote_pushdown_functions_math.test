@@ -274,7 +274,7 @@ physical_plan	<REGEX>:(?s).*Sqlite Query.*CASE WHEN "d" = 0 THEN duckdb_divide.*
 query II
 EXPLAIN SELECT round(d, 1), round(i, -1), sqrt(d), log(2, d) FROM s.n
 ----
-physical_plan	<REGEX>:(?s).*Sqlite Query.*duckdb_round\("d", 1, 0\).*duckdb_round_integer\("i", -1, 0\).*duckdb_sqrt\("d"\).*duckdb_log\(2, "d"\).*
+physical_plan	<REGEX>:(?s).*Sqlite Query.*duckdb_round\("d", 1, 0\).*duckdb_round_integer\("i", -1, 0, 'BIGINT'\).*duckdb_sqrt\("d"\).*duckdb_log\(2, "d"\).*
 
 # integer division and modulo by zero raise an error, like in DuckDB
 foreach db l s

@@ -1,0 +1,112 @@
+# name: test/sql/remote_pushdown/remote_pushdown_type_inference.test
+# description: Test the types that remote pushdown infers for the columns of subqueries, CTEs and VALUES lists
+# group: [remote_pushdown]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_type_inference.db' AS l (TYPE SQLITE)
+
+statement ok
+SET sqlite_enable_remote_pushdown = true
+
+statement ok
+ATTACH '{TEST_DIR}/remote_pushdown_type_inference.db' AS s (TYPE SQLITE)
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE a(i INTEGER, v TEXT)')
+
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE b(i INTEGER, w TEXT)')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO a VALUES (1, ''10''), (2, ''9''), (3, NULL)')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO b VALUES (1, ''x''), (3, ''y''), (4, ''z'')')
+
+# the results are the same with and without remote pushdown
+foreach db l s
+
+# a column of a subquery shadows the column of a table with the same name
+query I
+SELECT x.i FROM (SELECT v AS i FROM {db}.a) AS x WHERE x.i > '2' ORDER BY 1
+----
+9
+
+query II
+SELECT a.i, x.j FROM {db}.a JOIN (SELECT i AS j FROM {db}.b) AS x ON a.i = x.j ORDER BY 1
+----
+1	1
+3	3
+
+# column aliases of a subquery, a CTE and a VALUES list
+query I
+SELECT k FROM (SELECT v FROM {db}.a) AS x(k) WHERE k < '5' ORDER BY 1
+----
+10
+
+query I
+WITH c(k) AS (SELECT v FROM {db}.a) SELECT k FROM c WHERE k < '5' ORDER BY 1
+----
+10
+
+query I
+SELECT x FROM (VALUES ('10'), ('9')) AS t(x) WHERE x < '5' ORDER BY 1
+----
+10
+
+query II
+SELECT a.i, t.col1 FROM {db}.a JOIN (VALUES (1, '1'), (2, '2')) AS t ON a.i = t.col0 WHERE t.col1 < a.v ORDER BY 1
+----
+1	1
+2	2
+
+# scalar, EXISTS and IN subqueries
+query I
+SELECT i FROM {db}.a WHERE v = (SELECT max(v) FROM {db}.a) ORDER BY 1
+----
+2
+
+query I
+SELECT i FROM {db}.a WHERE EXISTS (SELECT 1 FROM {db}.b WHERE b.i = a.i) = true ORDER BY 1
+----
+1
+3
+
+query I
+SELECT (SELECT max(w) FROM {db}.b) < v FROM {db}.a ORDER BY i
+----
+false
+false
+NULL
+
+# a correlated subquery
+query II
+SELECT i, (SELECT max(b.w) FROM {db}.b WHERE b.i <= a.i) FROM {db}.a ORDER BY 1
+----
+1	x
+2	x
+3	y
+
+# a cast
+query I
+SELECT CAST(i AS VARCHAR) FROM {db}.a WHERE CAST(i AS VARCHAR) < v ORDER BY 1
+----
+1
+2
+
+# the right side of a SEMI join is only visible in its condition, a USING column is merged
+query I
+SELECT i FROM {db}.a SEMI JOIN {db}.b ON a.i = b.i ORDER BY 1
+----
+1
+3
+
+query II
+SELECT i, w FROM {db}.a JOIN {db}.b USING (i) ORDER BY 1
+----
+1	x
+3	y
+
+endloop

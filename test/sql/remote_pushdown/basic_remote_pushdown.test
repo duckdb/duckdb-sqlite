@@ -43,7 +43,7 @@ ATTACH '{TEST_DIR}/rp_basic.db' AS s (TYPE SQLITE)
 query II
 EXPLAIN SELECT SUM(i) FROM s.t
 ----
-physical_plan	<REGEX>:(?s).*Sqlite Query.*SELECT sum\("i"\) AS "sum\(i\)" FROM "t".*
+physical_plan	<REGEX>:(?s).*Sqlite Query.*SELECT duckdb_sum\("i"\) AS "sum\(i\)" FROM "t".*
 
 foreach db l s
 

@@ -19,6 +19,15 @@ class SQLiteStatement;
 struct IndexInfo;
 class ClientContext;
 
+//! What PRAGMA table_xinfo tells about a table besides its columns
+struct SQLiteTableShape {
+	//! The name that addresses the row id (see TryGetRowIdName), empty if columns hide it
+	string rowid_name;
+	//! The column of the INTEGER PRIMARY KEY, which is an alias of the row id - empty if there is none
+	string integer_primary_key;
+	bool generated_columns = false;
+};
+
 class SQLiteDB {
 public:
 	SQLiteDB();
@@ -51,14 +60,15 @@ public:
 
 	vector<string> GetEntries(string entry_type);
 	CatalogType GetEntryType(const string &name);
-	//! Also gets the name that addresses the row id of the table (see TryGetRowIdName), empty if columns hide it
-	void GetTableInfo(const string &table_name, ColumnList &columns, vector<unique_ptr<Constraint>> &constraints,
-	                  bool all_varchar, vector<bool> &utf8_text_affinity, string &rowid_name);
-	//! The columns that the rows of a table can be looked up by - the row id, and the leading columns of indexes -
-	//! whether a unique index (or primary key) compares a column with a collation other than BINARY, and whether the
-	//! table has generated columns
-	case_insensitive_set_t GetIndexedColumns(const string &table_name, bool &non_binary_unique_key,
-	                                         bool &generated_columns);
+	//! Whether the database uses the UTF-8 encoding
+	bool IsUTF8();
+	//! utf8 is whether the database uses the UTF-8 encoding (see IsUTF8)
+	void GetTableInfo(const string &table_name, bool utf8, ColumnList &columns,
+	                  vector<unique_ptr<Constraint>> &constraints, bool all_varchar, vector<bool> &utf8_text_affinity,
+	                  SQLiteTableShape &shape);
+	//! The row id, its alias and the leading columns of indexes, and whether a unique index has a non-BINARY collation
+	case_insensitive_set_t GetIndexedColumns(const string &table_name, const SQLiteTableShape &shape,
+	                                         bool &non_binary_unique_key);
 	//! Whether each column of a table compares strings with the BINARY collation
 	vector<bool> GetBinaryCollation(const string &table_name, const ColumnList &columns);
 	//! Whether each column has REAL affinity (stores no integers)

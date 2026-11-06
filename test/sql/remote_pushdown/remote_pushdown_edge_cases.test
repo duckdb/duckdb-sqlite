@@ -37,6 +37,12 @@ FROM sqlite_query(l, 'CREATE TABLE wr(k INTEGER PRIMARY KEY, d DATE) WITHOUT ROW
 statement ok
 FROM sqlite_query(l, 'INSERT INTO wr VALUES (1, ''2020-01-01''), (2, ''2022-02-02'')')
 
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE big(id INTEGER, i INTEGER)')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO big VALUES (1, 9223372036854775807), (2, 9223372036854775807), (3, -9223372036854775808), (4, 2147483645), (5, 4611686018427387905)')
+
 # the results are the same with and without remote pushdown
 foreach db l s
 
@@ -192,6 +198,63 @@ SELECT i FROM {db}.t WHERE i NOT IN (SELECT i FROM {db}.empty) ORDER BY i
 NULL
 
 # integer overflow raises an error in both
+statement error
+SELECT count(*) FROM {db}.big WHERE i * i > 100
+----
+Overflow in multiplication of INT64 (9223372036854775807 * 9223372036854775807)!
+
+statement error
+SELECT max(i + 1) FROM {db}.big
+----
+Overflow in addition of INT64 (9223372036854775807 + 1)!
+
+statement error
+SELECT min(i - 1) FROM {db}.big
+----
+Overflow in subtraction of INT64 (-9223372036854775808 - 1)!
+
+statement error
+SELECT max(-i) FROM {db}.big
+----
+Overflow in negation of numeric value!
+
+statement error
+SELECT count(*) FROM {db}.big WHERE i // -1 > 0
+----
+Overflow in division of -9223372036854775808 / -1
+
+statement error
+SELECT CAST(i AS INTEGER) + 3 FROM {db}.big WHERE id = 4
+----
+Overflow in addition of INT32 (2147483645 + 3)!
+
+statement error
+SELECT round(CAST(i AS INTEGER), -1) FROM {db}.big WHERE id = 4
+----
+Overflow in ROUND of integer
+
+query IIIII
+SELECT i - 1, i * 1, -i, i // -1, CAST(i AS INTEGER) + 2 FROM {db}.big WHERE id = 4
+----
+2147483644	2147483645	-2147483645	-2147483645	2147483647
+
+# integers are summed exactly, as a HUGEINT
+query I
+SELECT sum(i) FROM {db}.big WHERE id <= 2
+----
+18446744073709551614
+
+query II
+SELECT id % 2 AS g, sum(i) FROM {db}.big GROUP BY g ORDER BY g
+----
+0	9223372039002259452
+1	4611686018427387904
+
+query I
+SELECT sum(i) * 2 FROM {db}.big WHERE id = 5
+----
+9223372036854775810
+
 # the row id
 query II
 SELECT rowid, i FROM {db}.t ORDER BY rowid DESC

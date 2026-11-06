@@ -123,7 +123,7 @@ physical_plan	<REGEX>:(?s).*Sqlite Query.*WITH "x" \("k", "name"\) AS \(SELECT "
 query II
 EXPLAIN WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < (SELECT max(i) FROM s.b)) SELECT n FROM r
 ----
-physical_plan	<REGEX>:(?s).*Sqlite Query.*WITH RECURSIVE "r" \("n"\) AS \(SELECT 1 AS "1" UNION ALL SELECT \("n" \+ 1\) AS "\(n \+ 1\)" FROM "r".*
+physical_plan	<REGEX>:(?s).*Sqlite Query.*WITH RECURSIVE "r" \("n"\) AS \(SELECT 1 AS "1" UNION ALL SELECT duckdb_add\("n", 1, 'INTEGER'\) AS "\(n \+ 1\)" FROM "r".*
 
 query II
 EXPLAIN WITH x AS MATERIALIZED (SELECT i FROM s.b) SELECT count(*) FROM x
@@ -138,6 +138,28 @@ WITH b AS (SELECT 42 AS i) SELECT count(*) FROM s.b
 
 query II
 EXPLAIN WITH b AS (SELECT 42 AS i) SELECT count(*) FROM s.b
+----
+physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+# a CTE without RECURSIVE does not see itself - SQLite would read the reference to the table as a recursive reference
+foreach db l s
+
+statement ok
+USE {db}
+
+query I
+WITH b AS (SELECT 0 AS i UNION ALL SELECT i + 1 FROM b WHERE i < 3) SELECT i FROM b ORDER BY i
+----
+0
+2
+
+statement ok
+USE memory
+
+endloop
+
+query II
+EXPLAIN WITH b AS (SELECT 0 AS i UNION ALL SELECT i + 1 FROM s.b WHERE i < 3) SELECT i FROM b
 ----
 physical_plan	<!REGEX>:(?s).*Sqlite Query.*
 
