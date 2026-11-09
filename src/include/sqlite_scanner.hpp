@@ -41,6 +41,8 @@ struct SqliteBindData : public TableFunctionData {
 	vector<string> preliminary_queries;
 	//! Whether the cached catalog entries of the transaction are cleared after executing the statement
 	bool clear_catalog_cache = false;
+	//! Whether the statement can write to the database (sqlite_query)
+	bool modifies_database = false;
 
 	QualifiedName qualified_table_name;
 	Identifier catalog_name;

@@ -44,11 +44,17 @@ bool SQLiteTableEntry::HasNonBinaryUniqueKey(ClientContext &context) {
 bool SQLiteTableEntry::GetRowIdInfo(SQLiteDB &db, RowIdInfo &info) {
 	lock_guard<mutex> guard(metadata_lock);
 	if (!row_id_info_loaded) {
+		row_id_info = RowIdInfo();
 		has_row_id_info = db.GetRowIdInfo(name.GetIdentifierName(), rowid_name, row_id_info);
 		row_id_info_loaded = true;
 	}
 	info = row_id_info;
 	return has_row_id_info;
+}
+
+void SQLiteTableEntry::ClearRowIdInfo() {
+	lock_guard<mutex> guard(metadata_lock);
+	row_id_info_loaded = false;
 }
 
 const ColumnList &SQLiteTableEntry::GetColumns() const {

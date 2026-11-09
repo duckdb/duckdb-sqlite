@@ -717,11 +717,28 @@ static bool SQLiteTryCastInteger(const hugeint_t &value, const LogicalType &type
 	}
 }
 
+//! Whether the operands are integers - SQLite also stores other values in integer columns (e.g. a REAL)
+static bool SQLiteIntegerOperands(int argc, sqlite3_value **argv) {
+	for (int i = 0; i < argc; i++) {
+		if (sqlite3_value_numeric_type(argv[i]) != SQLITE_INTEGER) {
+			return false;
+		}
+	}
+	return true;
+}
+
 //! duckdb_add(x, y, type) / duckdb_subtract / duckdb_multiply - integer arithmetic that fails on overflow like DuckDB
 template <char OP>
 static void SQLiteIntegerArithmeticFunction(sqlite3_context *context, int argc, sqlite3_value **argv) {
 	if (SQLiteHasNull(2, argv)) {
 		sqlite3_result_null(context);
+		return;
+	}
+	if (!SQLiteIntegerOperands(2, argv)) {
+		// other values are computed like SQLite's operator does
+		double x = sqlite3_value_double(argv[0]);
+		double y = sqlite3_value_double(argv[1]);
+		sqlite3_result_double(context, OP == '+' ? x + y : OP == '-' ? x - y : x * y);
 		return;
 	}
 	SQLiteRunFunction(context, [&]() {
@@ -746,6 +763,10 @@ static void SQLiteIntegerArithmeticFunction(sqlite3_context *context, int argc, 
 static void SQLiteNegateFunction(sqlite3_context *context, int argc, sqlite3_value **argv) {
 	if (SQLiteHasNull(1, argv)) {
 		sqlite3_result_null(context);
+		return;
+	}
+	if (!SQLiteIntegerOperands(1, argv)) {
+		sqlite3_result_double(context, -sqlite3_value_double(argv[0]));
 		return;
 	}
 	SQLiteRunFunction(context, [&]() {

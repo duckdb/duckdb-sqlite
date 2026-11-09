@@ -34,6 +34,11 @@ public:
 	void ClearTableEntry(const string &table_name);
 	//! Remove all cached catalog entries - after a statement that was executed in SQLite modified them
 	void ClearCatalogCache();
+	//! Make the cached table entries read their row id range again - after a statement that was executed in SQLite
+	//! wrote to the database
+	void ClearRowIdInfo();
+	//! Make the cached entry of a table, if any, read its row id range again - after the transaction wrote to it
+	void ClearRowIdInfo(const string &table_name);
 
 	static SQLiteTransaction &Get(ClientContext &context, Catalog &catalog);
 

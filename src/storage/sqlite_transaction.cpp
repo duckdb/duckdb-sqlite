@@ -22,6 +22,8 @@ public:
 	optional_ptr<CatalogEntry> GetEntry(const string &entry_name);
 	void EraseEntry(const string &entry_name);
 	void Clear();
+	void ClearRowIdInfo();
+	void ClearRowIdInfo(const string &table_name);
 
 private:
 	mutex lock;
@@ -57,6 +59,23 @@ void SQLiteCatalogMap::EraseEntry(const string &entry_name) {
 void SQLiteCatalogMap::Clear() {
 	lock_guard<mutex> guard(lock);
 	catalog_entries.clear();
+}
+
+void SQLiteCatalogMap::ClearRowIdInfo() {
+	lock_guard<mutex> guard(lock);
+	for (auto &entry : catalog_entries) {
+		if (entry.second->type == CatalogType::TABLE_ENTRY) {
+			entry.second->Cast<SQLiteTableEntry>().ClearRowIdInfo();
+		}
+	}
+}
+
+void SQLiteCatalogMap::ClearRowIdInfo(const string &table_name) {
+	lock_guard<mutex> guard(lock);
+	auto entry = catalog_entries.find(table_name);
+	if (entry != catalog_entries.end() && entry->second->type == CatalogType::TABLE_ENTRY) {
+		entry->second->Cast<SQLiteTableEntry>().ClearRowIdInfo();
+	}
 }
 
 SQLiteTransaction::SQLiteTransaction(SQLiteCatalog &sqlite_catalog, TransactionManager &manager, ClientContext &context)
@@ -268,6 +287,14 @@ void SQLiteTransaction::ClearTableEntry(const string &table_name) {
 
 void SQLiteTransaction::ClearCatalogCache() {
 	catalog_map->Clear();
+}
+
+void SQLiteTransaction::ClearRowIdInfo() {
+	catalog_map->ClearRowIdInfo();
+}
+
+void SQLiteTransaction::ClearRowIdInfo(const string &table_name) {
+	catalog_map->ClearRowIdInfo(table_name);
 }
 
 string GetDropSQL(CatalogType type, const string &table_name, bool cascade) {

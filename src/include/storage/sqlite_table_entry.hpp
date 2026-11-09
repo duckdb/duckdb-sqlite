@@ -63,8 +63,10 @@ public:
 	//! Whether a unique index (or the primary key) compares a column with a collation other than BINARY - SQLite then
 	//! finds conflicts that DuckDB does not
 	bool HasNonBinaryUniqueKey(ClientContext &context);
-	//! The range of the row ids, read once per entry - false if it is not suitable for a parallel scan
+	//! The range of the row ids, cached on the entry - false if it is not suitable for a parallel scan
 	bool GetRowIdInfo(SQLiteDB &db, RowIdInfo &info);
+	//! Makes the next GetRowIdInfo read the range again - called after the transaction modifies the table
+	void ClearRowIdInfo();
 
 protected:
 	ColumnList columns;

@@ -262,16 +262,20 @@ SqliteInitLocalState(ExecutionContext &context, TableFunctionInitInput &input, G
 static unique_ptr<GlobalTableFunctionState> SqliteInitGlobalState(ClientContext &context,
                                                                   TableFunctionInitInput &input) {
 	auto &bind_data = input.bind_data->Cast<SqliteBindData>();
-	if (!bind_data.preliminary_queries.empty()) {
+	if (bind_data.modifies_database) {
 		D_ASSERT(!bind_data.catalog_name.empty());
 		auto attached_catalog = SQLiteCatalog::Lookup(context, bind_data.catalog_name);
 		auto &transaction = SQLiteTransaction::Get(context, attached_catalog.Get<SQLiteCatalog>());
-		for (auto &query : bind_data.preliminary_queries) {
-			transaction.GetDB().Execute(query);
+		if (!bind_data.preliminary_queries.empty()) {
+			for (auto &query : bind_data.preliminary_queries) {
+				transaction.GetDB().Execute(query);
+			}
+			if (bind_data.clear_catalog_cache) {
+				transaction.ClearCatalogCache();
+			}
 		}
-		if (bind_data.clear_catalog_cache) {
-			transaction.ClearCatalogCache();
-		}
+		// the statements of the transaction that are bound after this one read the row id ranges again
+		transaction.ClearRowIdInfo();
 	}
 	auto result = make_uniq<SqliteGlobalState>(SqliteMaxThreads(context, input.bind_data.get()));
 	result->position = 0;

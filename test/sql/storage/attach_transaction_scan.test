@@ -36,3 +36,91 @@ query I con1
 SELECT sum(v) FROM s.big
 ----
 1
+
+# the cardinality estimate follows the writes of the transaction
+statement ok
+CREATE TABLE s.small AS SELECT range AS i FROM range(1000)
+
+statement ok
+FROM sqlite_query(s, 'CREATE TABLE keyed(id INTEGER PRIMARY KEY)')
+
+statement ok
+INSERT INTO s.keyed SELECT range + 1 FROM range(1000)
+
+statement ok
+BEGIN
+
+query II
+EXPLAIN SELECT * FROM s.small
+----
+physical_plan	<REGEX>:.*~999 rows.*
+
+statement ok
+INSERT INTO s.small SELECT range FROM range(4000)
+
+query I
+SELECT count(*) FROM s.small
+----
+5000
+
+query II
+EXPLAIN SELECT * FROM s.small
+----
+physical_plan	<REGEX>:.*~4,999 rows.*
+
+statement ok
+DELETE FROM s.small WHERE rowid > 2000
+
+query II
+EXPLAIN SELECT * FROM s.small
+----
+physical_plan	<REGEX>:.*~1,999 rows.*
+
+statement ok
+FROM sqlite_query(s, 'INSERT INTO small SELECT i FROM small')
+
+query II
+EXPLAIN SELECT * FROM s.small
+----
+physical_plan	<REGEX>:.*~3,999 rows.*
+
+query II
+EXPLAIN SELECT * FROM s.keyed
+----
+physical_plan	<REGEX>:.*~999 rows.*
+
+statement ok
+UPDATE s.keyed SET id = 100000 WHERE id = 1000
+
+query II
+EXPLAIN SELECT * FROM s.keyed
+----
+physical_plan	<REGEX>:.*~99,999 rows.*
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM s.small
+----
+4000
+
+# without rows, the table has no row id range
+statement ok
+BEGIN
+
+query II
+EXPLAIN SELECT * FROM s.small
+----
+physical_plan	<REGEX>:.*~3,999 rows.*
+
+statement ok
+DELETE FROM s.small
+
+query II
+EXPLAIN SELECT * FROM s.small
+----
+physical_plan	<!REGEX>:.*~3,999 rows.*
+
+statement ok
+ROLLBACK
