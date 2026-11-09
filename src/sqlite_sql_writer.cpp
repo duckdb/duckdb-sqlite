@@ -38,6 +38,8 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/function/function_binder.hpp"
+#include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 
 #include "sqlite_functions.hpp"
 #include "sqlite_utils.hpp"
@@ -2084,6 +2086,23 @@ string SQLiteSQLWriter::WriteDivision(const ParsedExpression &left, const Parsed
 	return "(CASE WHEN " + y + " = 0 THEN duckdb_divide(" + x + ", " + y + ") ELSE " + x + op + y + " END)";
 }
 
+//! Whether the minimum of a signed type modulo -1 raises an overflow error in DuckDB - older versions raise it, newer
+//! ones yield 0 (like SQLite)
+static bool SQLiteModuloOfMinimumOverflows(ClientContext &context) {
+	static const bool overflows = [&context]() {
+		vector<unique_ptr<Expression>> children;
+		children.push_back(make_uniq<BoundConstantExpression>(Value::BIGINT(NumericLimits<int64_t>::Minimum())));
+		children.push_back(make_uniq<BoundConstantExpression>(Value::BIGINT(-1)));
+		ErrorData error;
+		FunctionBinder binder(context);
+		auto modulo = binder.BindScalarFunction(Identifier(DEFAULT_SCHEMA), Identifier("%"), std::move(children), error,
+		                                        true);
+		Value result;
+		return !modulo || !ExpressionExecutor::TryEvaluateScalar(context, *modulo, result);
+	}();
+	return overflows;
+}
+
 string SQLiteSQLWriter::WriteArithmetic(const FunctionExpression &func, const string &name,
                                         const vector<FunctionArgument> &children) {
 	auto &left_expr = children[0].GetExpression();
@@ -2129,7 +2148,8 @@ string SQLiteSQLWriter::WriteArithmetic(const FunctionExpression &func, const st
 			// DuckDB computes these for floating point numbers as well
 			throw SQLitePushdownNotSupported("unsupported integer division / modulo");
 		}
-		// the minimum of a signed type divided by -1 (or modulo -1) overflows in DuckDB
+		// the minimum of a signed type divided by -1 overflows in DuckDB - modulo -1 overflows in older DuckDB versions,
+		// and is 0 in newer ones (like in SQLite)
 		LogicalType common_type;
 		if (!LogicalType::TryGetMaxLogicalType(context, left_type, right_type, common_type)) {
 			throw SQLitePushdownNotSupported("unsupported integer division / modulo");
@@ -2137,6 +2157,9 @@ string SQLiteSQLWriter::WriteArithmetic(const FunctionExpression &func, const st
 		auto minimum = SQLiteSignedMinimum(common_type);
 		if (name == "//") {
 			return WriteDivision(left_expr, right_expr, true, minimum);
+		}
+		if (!SQLiteModuloOfMinimumOverflows(context)) {
+			minimum.clear();
 		}
 		Value value;
 		if (SQLiteCapabilities::TryGetConstantValue(right_expr, value) && !value.IsNull() &&
