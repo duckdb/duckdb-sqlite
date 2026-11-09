@@ -583,10 +583,42 @@ SELECT id FROM {db}.u WHERE dt ORDER BY id
 ----
 Unimplemented type for cast (DATE -> BOOLEAN)
 
-statement error
+endloop
+
+# the minimum integer modulo -1 overflows in older DuckDB versions, and is 0 in newer ones
+foreach db l s
+
+statement maybe
 SELECT id, i % -1 FROM {db}.big ORDER BY id
 ----
 Overflow in division
+
+statement maybe
+SELECT id, i % (id - id - 1) FROM {db}.big ORDER BY id
+----
+Overflow in division
+
+query II
+SELECT id, i % -1 FROM {db}.big WHERE id <> 2 ORDER BY id
+----
+1	0
+3	0
+4	0
+5	0
+6	0
+7	0
+8	NULL
+
+query II
+SELECT id, i % (id - id - 1) FROM {db}.big WHERE id <> 2 ORDER BY id
+----
+1	0
+3	0
+4	0
+5	0
+6	0
+7	0
+8	NULL
 
 endloop
 
