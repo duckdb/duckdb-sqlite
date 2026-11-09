@@ -49,6 +49,10 @@ FROM sqlite_query(l, 'CREATE TABLE gl(id INTEGER PRIMARY KEY, s TEXT)')
 statement ok
 FROM sqlite_query(l, 'INSERT INTO gl VALUES (1,''é''),(2,''e''),(3,''ab''),(4,''xé''),(5,'''')')
 
+# a copy of gl in DuckDB, to compare with how DuckDB itself evaluates GLOB
+statement ok
+CREATE TEMPORARY TABLE gl_local AS FROM l.gl
+
 # the results are the same with and without remote pushdown
 foreach db l s
 
@@ -499,15 +503,25 @@ SELECT id, epoch_ms(ts), epoch(ts) FROM {db}.d ORDER BY id
 4	1707523200000	1707523200.0
 5	NULL	NULL
 
-# DuckDB's GLOB matches a byte with a ?
-query IIIII
-SELECT id, s GLOB '?', s GLOB '??', s GLOB 'x?', s GLOB '*' FROM {db}.gl ORDER BY id
+# GLOB matches like DuckDB's GLOB - a ? matches a byte of a non-ASCII character in some DuckDB versions, and the
+# whole character in others
+query I
+SELECT DISTINCT typeof(s GLOB '?') FROM {db}.gl
 ----
-1	false	true	false	true
-2	true	false	false	true
-3	false	true	false	true
-4	false	false	false	true
-5	false	false	false	true
+BOOLEAN
+
+query I
+SELECT count(*) FROM (
+	(SELECT id, s GLOB '?', s GLOB '??', s GLOB 'x?', s GLOB '*' FROM {db}.gl
+	EXCEPT ALL
+	SELECT id, s GLOB '?', s GLOB '??', s GLOB 'x?', s GLOB '*' FROM gl_local)
+	UNION ALL
+	(SELECT id, s GLOB '?', s GLOB '??', s GLOB 'x?', s GLOB '*' FROM gl_local
+	EXCEPT ALL
+	SELECT id, s GLOB '?', s GLOB '??', s GLOB 'x?', s GLOB '*' FROM {db}.gl)
+)
+----
+0
 
 query IIII
 SELECT id, s LIKE '_', s LIKE '__', s LIKE 'x_' FROM {db}.gl ORDER BY id
