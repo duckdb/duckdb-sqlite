@@ -191,6 +191,7 @@ static unique_ptr<FunctionData> SQLiteQueryBind(ClientContext &context, TableFun
 			input.table_function.call_return_type = StatementReturnType::CHANGED_ROWS;
 		}
 	}
+	result->modifies_database = modifies_database;
 	if (input.binder) {
 		// let DuckDB check the transaction (e.g. that a read-only transaction does not write), and rebind prepared
 		// statements when the catalog changed

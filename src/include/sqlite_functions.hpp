@@ -22,8 +22,9 @@ public:
 	static void Register(sqlite3 *db);
 
 	//! Convert a DuckDB value to the value that represents it in SQLite - the inverse of SQLiteUtils::ToDuckDBValue
-	//! for the types that have a representation in pushed down queries. Throws if the value cannot be represented.
-	static void SetResult(sqlite3_context *context, const Value &value);
+	//! for the types that have a representation in pushed down queries. Throws if the value cannot be represented,
+	//! unless as_text is set - the value is then returned as its text, which only DuckDB can read back.
+	static void SetResult(sqlite3_context *context, const Value &value, bool as_text = false);
 	//! Whether values of a type can be represented in pushed down queries
 	static bool HasRepresentation(const LogicalType &type);
 	//! The text representation of DATE and TIMESTAMP values in pushed down queries, which orders like the values -

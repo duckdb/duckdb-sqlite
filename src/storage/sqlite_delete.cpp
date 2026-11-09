@@ -21,10 +21,13 @@ SQLiteDelete::SQLiteDelete(PhysicalPlan &physical_plan, LogicalOperator &op, Tab
 //===--------------------------------------------------------------------===//
 class SQLiteDeleteGlobalState : public GlobalSinkState {
 public:
-	explicit SQLiteDeleteGlobalState(SQLiteTableEntry &table) : table(table), delete_count(0) {
+	SQLiteDeleteGlobalState(SQLiteTableEntry &table, SQLiteTransaction &transaction)
+	    : table(table), transaction(transaction), table_name(table.name.GetIdentifierName()), delete_count(0) {
 	}
 
 	SQLiteTableEntry &table;
+	SQLiteTransaction &transaction;
+	string table_name;
 	SQLiteStatement statement;
 	std::mutex rowid_lock;
 	vector<row_t> rowids;
@@ -42,7 +45,8 @@ string GetDeleteSQL(const string &table_name, const string &rowid_name) {
 unique_ptr<GlobalSinkState> SQLiteDelete::GetGlobalSinkState(ClientContext &context) const {
 	auto &sqlite_table = table.Cast<SQLiteTableEntry>();
 
-	auto result = make_uniq<SQLiteDeleteGlobalState>(sqlite_table);
+	auto &transaction = SQLiteTransaction::Get(context, sqlite_table.catalog);
+	auto result = make_uniq<SQLiteDeleteGlobalState>(sqlite_table, transaction);
 	return std::move(result);
 }
 
@@ -80,6 +84,7 @@ SourceResultType SQLiteDelete::GetDataInternal(ExecutionContext &context, DataCh
 		}
 		insert_gstate.delete_count = insert_gstate.rowids.size();
 		insert_gstate.delete_done = true;
+		insert_gstate.transaction.ClearRowIdInfo(insert_gstate.table_name);
 	}
 	chunk.SetChildCardinality(1);
 	chunk.data[0].SetValue(0, Value::BIGINT(insert_gstate.delete_count));

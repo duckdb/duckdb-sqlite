@@ -387,26 +387,35 @@ static bool FindRowIdName(const vector<string> &column_names, string &rowid_name
 	return false;
 }
 
-void SQLiteDB::GetTableInfo(const string &table_name, ColumnList &columns, vector<unique_ptr<Constraint>> &constraints,
-                            bool all_varchar, vector<bool> &utf8_text_affinity, string &rowid_name) {
+bool SQLiteDB::IsUTF8() {
+	auto stmt = Prepare("PRAGMA encoding");
+	return stmt.Step() && stmt.GetValue<string>(0) == "UTF-8";
+}
+
+void SQLiteDB::GetTableInfo(const string &table_name, bool utf8, ColumnList &columns,
+                            vector<unique_ptr<Constraint>> &constraints, bool all_varchar,
+                            vector<bool> &utf8_text_affinity, SQLiteTableShape &shape) {
 	SQLiteStatement stmt;
 
 	idx_t primary_key_index = idx_t(-1);
 	vector<Identifier> primary_keys;
+	string primary_key_type;
 
 	bool found = false;
 	utf8_text_affinity.clear();
+	shape = SQLiteTableShape();
 	vector<string> all_column_names;
-
-	stmt = Prepare("PRAGMA encoding");
-	bool utf8 = stmt.Step() && stmt.GetValue<string>(0) == "UTF-8";
 
 	// table_xinfo also lists the hidden (e.g. generated) columns: DuckDB does not read them, but they hide row id names
 	stmt = Prepare(StringUtil::Format("PRAGMA table_xinfo('%s')", SQLiteUtils::SanitizeString(table_name)));
 	while (stmt.Step()) {
 		auto sqlite_colname = stmt.GetValue<string>(1);
 		all_column_names.push_back(sqlite_colname);
+		// cid, name, type, notnull, dflt_value, pk, hidden (2 and 3 are generated columns)
 		auto hidden = stmt.GetValue<int>(6);
+		if (hidden == 2 || hidden == 3) {
+			shape.generated_columns = true;
+		}
 		if (hidden) {
 			continue;
 		}
@@ -422,6 +431,7 @@ void SQLiteDB::GetTableInfo(const string &table_name, ColumnList &columns, vecto
 		if (pk) {
 			primary_key_index = cid;
 			primary_keys.emplace_back(sqlite_colname);
+			primary_key_type = stmt.GetValue<string>(2);
 		}
 		ColumnDefinition column(Identifier(std::move(sqlite_colname)), std::move(column_type));
 		if (!default_value.empty()) {
@@ -439,6 +449,10 @@ void SQLiteDB::GetTableInfo(const string &table_name, ColumnList &columns, vecto
 	if (!found) {
 		throw InternalException("GetTableInfo - table \"%s\" not found", table_name);
 	}
+	if (primary_keys.size() == 1 && StringUtil::CIEquals(primary_key_type, "INTEGER")) {
+		// an INTEGER PRIMARY KEY is an alias of the row id
+		shape.integer_primary_key = primary_keys[0].GetIdentifierName();
+	}
 	if (!primary_keys.empty()) {
 		auto uc = make_uniq<UniqueConstraint>(std::move(primary_keys), true);
 		if (primary_keys.size() == 1) {
@@ -446,38 +460,20 @@ void SQLiteDB::GetTableInfo(const string &table_name, ColumnList &columns, vecto
 		}
 		constraints.emplace_back(std::move(uc));
 	}
-	rowid_name.clear();
-	FindRowIdName(all_column_names, rowid_name);
+	FindRowIdName(all_column_names, shape.rowid_name);
 }
 
-case_insensitive_set_t SQLiteDB::GetIndexedColumns(const string &table_name, bool &non_binary_unique_key,
-                                                   bool &generated_columns) {
+case_insensitive_set_t SQLiteDB::GetIndexedColumns(const string &table_name, const SQLiteTableShape &shape,
+                                                   bool &non_binary_unique_key) {
 	case_insensitive_set_t result;
 	non_binary_unique_key = false;
-	generated_columns = false;
-	string rowid_name;
-	if (TryGetRowIdName(table_name, rowid_name)) {
-		result.insert(rowid_name);
+	if (!shape.rowid_name.empty()) {
+		result.insert(shape.rowid_name);
 	}
-	// an INTEGER PRIMARY KEY is an alias of the row id
-	vector<string> pk_columns;
-	string pk_type;
+	if (!shape.integer_primary_key.empty()) {
+		result.insert(shape.integer_primary_key);
+	}
 	SQLiteStatement stmt;
-	// cid, name, type, notnull, dflt_value, pk, hidden (2 and 3 are generated columns)
-	stmt = Prepare(StringUtil::Format("PRAGMA table_xinfo(\"%s\")", SQLiteUtils::SanitizeIdentifier(table_name)));
-	while (stmt.Step()) {
-		auto hidden = stmt.GetValue<int>(6);
-		if (hidden == 2 || hidden == 3) {
-			generated_columns = true;
-		}
-		if (stmt.GetValue<int>(5) > 0) {
-			pk_columns.push_back(stmt.GetValue<string>(1));
-			pk_type = stmt.GetValue<string>(2);
-		}
-	}
-	if (pk_columns.size() == 1 && StringUtil::CIEquals(pk_type, "INTEGER")) {
-		result.insert(pk_columns[0]);
-	}
 	vector<pair<string, bool>> indexes;
 	stmt = Prepare(StringUtil::Format("PRAGMA index_list(\"%s\")", SQLiteUtils::SanitizeIdentifier(table_name)));
 	while (stmt.Step()) {

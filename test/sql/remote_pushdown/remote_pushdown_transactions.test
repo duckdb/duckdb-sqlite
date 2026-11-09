@@ -210,3 +210,50 @@ EXECUTE p
 ----
 1	NULL
 2	NULL
+
+# the cardinality estimate follows the pushed down writes of the transaction
+statement ok
+CREATE TABLE s.r AS SELECT range AS i FROM range(1000)
+
+statement ok
+PREPARE ins AS INSERT INTO s.r SELECT i + 1000 FROM s.r
+
+statement ok
+BEGIN
+
+query II
+EXPLAIN SELECT * FROM s.r
+----
+physical_plan	<REGEX>:.*~999 rows.*
+
+query II
+EXPLAIN EXECUTE ins
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*INSERT INTO "r".*
+
+statement ok
+EXECUTE ins
+
+query II
+EXPLAIN SELECT * FROM s.r
+----
+physical_plan	<REGEX>:.*~1,999 rows.*
+
+statement ok
+EXECUTE ins
+
+query II
+EXPLAIN SELECT * FROM s.r
+----
+physical_plan	<REGEX>:.*~3,999 rows.*
+
+statement ok
+DELETE FROM s.r WHERE i >= 500
+
+query II
+EXPLAIN SELECT * FROM s.r
+----
+physical_plan	<REGEX>:.*~499 rows.*
+
+statement ok
+COMMIT

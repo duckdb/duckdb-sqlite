@@ -69,6 +69,7 @@ SQLiteSQLWriter::SQLiteSQLWriter(ClientContext &context, SQLiteCatalog &catalog,
 SQLiteWriterResult SQLiteSQLWriter::WriteQuery(ClientContext &context, SQLiteCatalog &catalog, QueryNode &node) {
 	SQLiteSQLWriter writer(context, catalog, false);
 	writer.CollectColumnReferences(node);
+	writer.result_node = &node;
 	SQLiteWriterResult result;
 	result.sql = writer.WriteQueryNode(node);
 	return result;
@@ -560,6 +561,11 @@ LogicalType SQLiteSQLWriter::InferType(const ParsedExpression &expr) {
 	if (entry != type_cache.end()) {
 		return entry->second;
 	}
+	LogicalType known_type;
+	if (TryInferTypeWithoutProbe(expr, known_type)) {
+		type_cache[&expr] = known_type;
+		return known_type;
+	}
 	// bind a probe query that evaluates the expression over the FROM clause of the enclosing SELECT
 	auto probe = make_uniq<SelectNode>();
 	auto probe_expr = expr.Copy();
@@ -624,6 +630,155 @@ LogicalType SQLiteSQLWriter::InferType(const ParsedExpression &expr) {
 	return result;
 }
 
+//! Whether a parsed type is the type DuckDB binds it to
+static bool SQLiteIsBoundType(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::BOOLEAN:
+	case LogicalTypeId::TINYINT:
+	case LogicalTypeId::SMALLINT:
+	case LogicalTypeId::INTEGER:
+	case LogicalTypeId::BIGINT:
+	case LogicalTypeId::HUGEINT:
+	case LogicalTypeId::UTINYINT:
+	case LogicalTypeId::USMALLINT:
+	case LogicalTypeId::UINTEGER:
+	case LogicalTypeId::UBIGINT:
+	case LogicalTypeId::FLOAT:
+	case LogicalTypeId::DOUBLE:
+	case LogicalTypeId::VARCHAR:
+	case LogicalTypeId::BLOB:
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIMESTAMP:
+		return true;
+	default:
+		return false;
+	}
+}
+
+bool SQLiteSQLWriter::TryInferTypeWithoutProbe(const ParsedExpression &expr, LogicalType &result) {
+	switch (expr.GetExpressionClass()) {
+	case ExpressionClass::CAST:
+		result = SQLiteCapabilities::ResolveType(expr.Cast<CastExpression>().TargetType());
+		return SQLiteIsBoundType(result);
+	case ExpressionClass::SUBQUERY: {
+		auto &subquery = expr.Cast<SubqueryExpression>();
+		if (subquery.GetSubqueryType() != SubqueryType::SCALAR) {
+			result = LogicalType::BOOLEAN;
+			return true;
+		}
+		// a correlated subquery cannot be bound on its own
+		auto types = InferQueryTypesCached(*subquery.Subquery()->node);
+		if (types.size() != 1) {
+			return false;
+		}
+		result = types[0];
+		return true;
+	}
+	case ExpressionClass::COLUMN_REF: {
+		auto &names = expr.Cast<ColumnRefExpression>().ColumnNames();
+		if (table_scopes.empty() || names.empty() || names.size() > 2) {
+			return false;
+		}
+		vector<SQLiteRelation> relations;
+		for (auto &table_ref : table_scopes.back()) {
+			if (table_ref.get() && !CollectRelations(*table_ref.get(), relations)) {
+				return false;
+			}
+		}
+		auto &column_name = names.back().GetIdentifierName();
+		idx_t matches = 0;
+		for (auto &relation : relations) {
+			if (names.size() == 2 && !StringUtil::CIEquals(relation.binding, names[0].GetIdentifierName())) {
+				continue;
+			}
+			for (idx_t i = 0; i < relation.names.size(); i++) {
+				if (StringUtil::CIEquals(relation.names[i], column_name)) {
+					result = relation.types[i];
+					matches++;
+				}
+			}
+		}
+		// a column that no relation has is a correlated reference (or a field of a STRUCT)
+		return matches == 1;
+	}
+	default:
+		return false;
+	}
+}
+
+bool SQLiteSQLWriter::CollectRelations(const TableRef &ref, vector<SQLiteRelation> &relations) {
+	SQLiteRelation relation;
+	switch (ref.type) {
+	case TableReferenceType::BASE_TABLE: {
+		auto &base = ref.Cast<BaseTableRef>();
+		relation.binding = (base.alias.empty() ? base.Table() : base.alias).GetIdentifierName();
+		if (IsCTEReference(base)) {
+			relation.types = InferCTETypes(base, relation.names);
+			if (relation.types.empty()) {
+				return false;
+			}
+			break;
+		}
+		auto table = LookupTable(base);
+		if (!table) {
+			// e.g. a view
+			return false;
+		}
+		for (auto &column : table->GetColumns().Logical()) {
+			relation.names.push_back(column.Name().GetIdentifierName());
+			relation.types.push_back(column.Type());
+		}
+		break;
+	}
+	case TableReferenceType::JOIN: {
+		auto &join = ref.Cast<JoinRef>();
+		if (!join.alias.empty() || !join.using_columns.empty() || join.ref_type == JoinRefType::NATURAL) {
+			// the bindings of the join differ from the bindings of the joined relations
+			return false;
+		}
+		if (!CollectRelations(*join.left, relations)) {
+			return false;
+		}
+		// a SEMI / ANTI join only binds its left side
+		return join.type == JoinType::SEMI || join.type == JoinType::ANTI || CollectRelations(*join.right, relations);
+	}
+	case TableReferenceType::SUBQUERY: {
+		auto &subquery = ref.Cast<SubqueryRef>();
+		relation.binding = subquery.alias.GetIdentifierName();
+		relation.types = InferQueryTypesCached(*subquery.subquery->node, &relation.names);
+		if (relation.types.empty()) {
+			// e.g. a LATERAL subquery
+			return false;
+		}
+		break;
+	}
+	case TableReferenceType::EXPRESSION_LIST: {
+		auto &expression_list = ref.Cast<ExpressionListRef>();
+		relation.binding = ref.alias.empty() ? "valueslist" : ref.alias.GetIdentifierName();
+		relation.types = InferValuesTypes(expression_list);
+		if (relation.types.empty()) {
+			return false;
+		}
+		for (idx_t col = 0; col < relation.types.size(); col++) {
+			relation.names.push_back(col < expression_list.expected_names.size()
+			                             ? expression_list.expected_names[col].GetIdentifierName()
+			                             : "col" + to_string(col));
+		}
+		break;
+	}
+	default:
+		return false;
+	}
+	if (ref.column_name_alias.size() > relation.names.size()) {
+		return false;
+	}
+	for (idx_t i = 0; i < ref.column_name_alias.size(); i++) {
+		relation.names[i] = ref.column_name_alias[i].GetIdentifierName();
+	}
+	relations.push_back(std::move(relation));
+	return true;
+}
+
 LogicalType SQLiteSQLWriter::RequireType(const ParsedExpression &expr) {
 	auto result = InferType(expr);
 	if (result.id() == LogicalTypeId::INVALID) {
@@ -656,6 +811,59 @@ vector<LogicalType> SQLiteSQLWriter::InferQueryTypes(const QueryNode &node, vect
 		// e.g. a correlated column reference
 		return vector<LogicalType>();
 	}
+}
+
+vector<LogicalType> SQLiteSQLWriter::InferQueryTypesCached(const QueryNode &node, vector<string> *names) {
+	auto entry = query_type_cache.find(&node);
+	if (entry == query_type_cache.end()) {
+		vector<string> node_names;
+		auto types = InferQueryTypes(node, &node_names);
+		entry = query_type_cache.emplace(&node, make_pair(std::move(types), std::move(node_names))).first;
+	}
+	if (names) {
+		*names = entry->second.second;
+	}
+	return entry->second.first;
+}
+
+vector<LogicalType> SQLiteSQLWriter::InferCTETypes(const BaseTableRef &ref, vector<string> &names) {
+	// the innermost CTE of the name
+	optional_ptr<const CommonTableExpressionInfo> cte;
+	for (idx_t i = cte_scopes.size(); i > 0 && !cte; i--) {
+		auto &map = cte_scopes[i - 1].get().map;
+		auto entry = map.find(ref.Table());
+		if (entry != map.end()) {
+			cte = entry->second.get();
+		}
+	}
+	if (!cte) {
+		return vector<LogicalType>();
+	}
+	auto entry = query_type_cache.find(cte.get());
+	if (entry == query_type_cache.end()) {
+		auto probe = make_uniq<SelectNode>();
+		probe->select_list.push_back(make_uniq<StarExpression>());
+		auto cte_ref = make_uniq<BaseTableRef>();
+		cte_ref->SetQualifiedName(ref.GetQualifiedName());
+		probe->from_table = std::move(cte_ref);
+		vector<string> cte_names;
+		auto types = InferQueryTypes(*probe, &cte_names);
+		entry = query_type_cache.emplace(cte.get(), make_pair(std::move(types), std::move(cte_names))).first;
+	}
+	names = entry->second.second;
+	return entry->second.first;
+}
+
+vector<LogicalType> SQLiteSQLWriter::InferValuesTypes(const ExpressionListRef &ref) {
+	auto entry = query_type_cache.find(&ref);
+	if (entry == query_type_cache.end()) {
+		auto probe = make_uniq<SelectNode>();
+		probe->select_list.push_back(make_uniq<StarExpression>());
+		probe->from_table = const_cast<ExpressionListRef &>(ref).Copy(); // NOLINT: Copy is not const
+		auto types = InferQueryTypes(*probe);
+		entry = query_type_cache.emplace(&ref, make_pair(std::move(types), vector<string>())).first;
+	}
+	return entry->second.first;
 }
 
 LogicalType SQLiteSQLWriter::InferOuterColumnType(const ColumnRefExpression &column_ref) {
@@ -925,13 +1133,28 @@ static string SQLiteTypeName(const LogicalType &type) {
 	return LogicalTypeIdToString(type.id());
 }
 
-string SQLiteSQLWriter::WriteCast(const ParsedExpression &child, const LogicalType &target_type, bool try_cast) {
+//! Whether a cast that is evaluated by duckdb_cast can return values that SQLite cannot represent - NaN, infinite
+//! dates and timestamps, and years outside 1 to 9999
+static bool SQLiteCastCanReturnUnrepresentable(const LogicalType &source_type, const LogicalType &target_type) {
+	switch (target_type.id()) {
+	case LogicalTypeId::DOUBLE:
+		return source_type.id() != LogicalTypeId::HUGEINT;
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIMESTAMP:
+		return true;
+	default:
+		return false;
+	}
+}
+
+string SQLiteSQLWriter::WriteCast(const ParsedExpression &child, const LogicalType &target_type, bool try_cast,
+                                  bool result_value) {
 	auto source_type = RequireType(child);
-	return WriteCast(WriteExpression(child), source_type, target_type, try_cast);
+	return WriteCast(WriteExpression(child), source_type, target_type, try_cast, result_value);
 }
 
 string SQLiteSQLWriter::WriteCast(const string &child_str, const LogicalType &source_type,
-                                  const LogicalType &target_type, bool try_cast) {
+                                  const LogicalType &target_type, bool try_cast, bool result_value) {
 	if (source_type == target_type) {
 		return child_str;
 	}
@@ -1001,8 +1224,17 @@ string SQLiteSQLWriter::WriteCast(const string &child_str, const LogicalType &so
 		throw SQLitePushdownNotSupported("unsupported cast from " + source_type.ToString());
 	}
 	RequireExtensionFunctions("a cast from " + source_type.ToString() + " to " + target_type.ToString());
-	return string(try_cast ? "duckdb_try_cast(" : "duckdb_cast(") + child_str + ", '" + SQLiteTypeName(source_type) +
-	       "', '" + SQLiteTypeName(target_type) + "')";
+	string name = try_cast ? "duckdb_try_cast" : "duckdb_cast";
+	if (SQLiteCastCanReturnUnrepresentable(source_type, target_type)) {
+		if (!result_value) {
+			// SQLite would compare, compute with or store such a value - it raises an error at the first one
+			throw SQLitePushdownNotSupported("a cast to " + target_type.ToString() +
+			                                 " outside the select list of the result");
+		}
+		// the select list of the result returns them as their text
+		name += "_result";
+	}
+	return name + "(" + child_str + ", '" + SQLiteTypeName(source_type) + "', '" + SQLiteTypeName(target_type) + "')";
 }
 
 string SQLiteSQLWriter::WriteAs(const ParsedExpression &expr, const LogicalType &target_type) {
@@ -1134,12 +1366,7 @@ bool SQLiteSQLWriter::ProvidesColumn(const TableRef &ref, const Identifier &name
 		auto &base = ref.Cast<BaseTableRef>();
 		vector<string> names;
 		if (IsCTEReference(base)) {
-			auto probe = make_uniq<SelectNode>();
-			probe->select_list.push_back(make_uniq<StarExpression>());
-			auto cte_ref = make_uniq<BaseTableRef>();
-			cte_ref->SetQualifiedName(base.GetQualifiedName());
-			probe->from_table = std::move(cte_ref);
-			InferQueryTypes(*probe, &names);
+			InferCTETypes(base, names);
 		} else {
 			auto table = LookupTable(base);
 			if (table) {
@@ -1160,7 +1387,7 @@ bool SQLiteSQLWriter::ProvidesColumn(const TableRef &ref, const Identifier &name
 	}
 	case TableReferenceType::SUBQUERY: {
 		vector<string> names;
-		InferQueryTypes(*ref.Cast<SubqueryRef>().subquery->node, &names);
+		InferQueryTypesCached(*ref.Cast<SubqueryRef>().subquery->node, &names);
 		if (names.empty()) {
 			throw SQLitePushdownNotSupported("cannot determine the columns of a subquery");
 		}
@@ -1579,12 +1806,12 @@ string SQLiteSQLWriter::GetResultColumnName(const QueryNode &node) {
 }
 
 //! Whether a column of a table can be looked up through an index (or is the rowid)
-static bool SQLiteIsIndexedColumn(SQLiteTableEntry &table, const Identifier &column) {
-	return table.indexed_columns.count(column.GetIdentifierName()) > 0;
+static bool SQLiteIsIndexedColumn(ClientContext &context, SQLiteTableEntry &table, const Identifier &column) {
+	return table.GetIndexedColumns(context).count(column.GetIdentifierName()) > 0;
 }
 
 void SQLiteSQLWriter::VerifyCorrelatedSubquery(const QueryNode &node) {
-	if (!InferQueryTypes(node).empty()) {
+	if (!InferQueryTypesCached(node).empty()) {
 		// the subquery can be bound on its own - it is not correlated
 		return;
 	}
@@ -1653,7 +1880,7 @@ void SQLiteSQLWriter::VerifyCorrelatedSubquery(const QueryNode &node) {
 			}
 			auto &column_ref = pair.first->Cast<ColumnRefExpression>();
 			auto table = inner_table(column_ref);
-			if (table && SQLiteIsIndexedColumn(*table, column_ref.GetColumnName())) {
+			if (table && SQLiteIsIndexedColumn(context, *table, column_ref.GetColumnName())) {
 				return;
 			}
 		}
@@ -1688,7 +1915,7 @@ string SQLiteSQLWriter::WriteSubquery(const SubqueryExpression &subquery) {
 	case SubqueryType::ANY: {
 		// x = ANY (subquery)
 		auto child_type = RequireType(*subquery.GetChild());
-		auto subquery_types = InferQueryTypes(node);
+		auto subquery_types = InferQueryTypesCached(node);
 		if (subquery_types.size() != 1) {
 			throw SQLitePushdownNotSupported("cannot determine the type of an IN subquery");
 		}
@@ -1756,6 +1983,8 @@ string SQLiteSQLWriter::WriteExpression(const ParsedExpression &expr) {
 	case ExpressionClass::CASE:
 		return WriteCase(expr.Cast<CaseExpression>());
 	case ExpressionClass::CAST: {
+		auto returns_value = result_value;
+		result_value = false;
 		auto &cast_expr = expr.Cast<CastExpression>();
 		auto target_type = SQLiteCapabilities::ResolveType(cast_expr.TargetType());
 		if (cast_expr.Child().GetExpressionClass() == ExpressionClass::CONSTANT) {
@@ -1767,7 +1996,7 @@ string SQLiteSQLWriter::WriteExpression(const ParsedExpression &expr) {
 			}
 			return WriteConstant(value);
 		}
-		return WriteCast(cast_expr.Child(), target_type, cast_expr.IsTryCast());
+		return WriteCast(cast_expr.Child(), target_type, cast_expr.IsTryCast(), returns_value);
 	}
 	case ExpressionClass::BETWEEN: {
 		auto &between = expr.Cast<BetweenExpression>();
@@ -1787,6 +2016,22 @@ string SQLiteSQLWriter::WriteExpression(const ParsedExpression &expr) {
 //===--------------------------------------------------------------------===//
 // Functions
 //===--------------------------------------------------------------------===//
+//! The minimum of a signed integer type, which overflows when it is divided by -1 (empty for other types)
+static string SQLiteSignedMinimum(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::TINYINT:
+		return to_string(NumericLimits<int8_t>::Minimum());
+	case LogicalTypeId::SMALLINT:
+		return to_string(NumericLimits<int16_t>::Minimum());
+	case LogicalTypeId::INTEGER:
+		return to_string(NumericLimits<int32_t>::Minimum());
+	case LogicalTypeId::BIGINT:
+		return to_string(NumericLimits<int64_t>::Minimum());
+	default:
+		return string();
+	}
+}
+
 //! Whether DuckDB's division semantics are the default ones (a DOUBLE division that yields inf for a zero divisor,
 //! an error for a zero divisor of an integer division)
 static bool SQLiteHasDefaultDivisionSemantics(ClientContext &context) {
@@ -1804,7 +2049,7 @@ static bool SQLiteHasDefaultDivisionSemantics(ClientContext &context) {
 }
 
 string SQLiteSQLWriter::WriteDivision(const ParsedExpression &left, const ParsedExpression &right,
-                                      bool integer_division) {
+                                      bool integer_division, const string &overflow_minimum) {
 	if (!SQLiteHasDefaultDivisionSemantics(context)) {
 		throw SQLitePushdownNotSupported("non-default division semantics");
 	}
@@ -1817,15 +2062,22 @@ string SQLiteSQLWriter::WriteDivision(const ParsedExpression &left, const Parsed
 	Value value;
 	if (SQLiteCapabilities::TryGetConstantValue(right, value)) {
 		auto double_value = value.DefaultTryCastAs(LogicalType::DOUBLE);
-		if (double_value && !double_value->IsNull() && DoubleValue::Get(*double_value) != 0) {
-			// division by a non-zero constant
+		if (double_value && !double_value->IsNull() && DoubleValue::Get(*double_value) != 0 &&
+		    (DoubleValue::Get(*double_value) != -1 || overflow_minimum.empty() || statement_mode)) {
+			// division by a non-zero constant that cannot overflow (a view is evaluated by DuckDB)
 			return "(" + x + op + y + ")";
 		}
 	}
 	RequireExtensionFunctions("a division");
 	if (integer_division) {
 		// SQLite yields NULL, DuckDB raises an error
-		return "(CASE WHEN " + y + " = 0 THEN duckdb_error('Division by zero') ELSE " + x + op + y + " END)";
+		string result = "(CASE WHEN " + y + " = 0 THEN duckdb_error('Division by zero')";
+		if (!overflow_minimum.empty()) {
+			// SQLite yields a floating point number for the minimum of BIGINT, a value out of range for smaller types
+			result += " WHEN " + y + " = -1 AND " + x + " = (" + overflow_minimum +
+			          ") THEN duckdb_error('Overflow in division of " + overflow_minimum + " / -1')";
+		}
+		return result + " ELSE " + x + op + y + " END)";
 	}
 	// SQLite yields NULL, DuckDB yields inf / -inf (depending on the sign of the zero) - or NaN, which SQLite cannot
 	// represent
@@ -1842,7 +2094,15 @@ string SQLiteSQLWriter::WriteArithmetic(const FunctionExpression &func, const st
 				// SQLite's negation of 0.0 is 0.0, not -0.0
 				return "(" + WriteExpression(left_expr) + " * -1.0)";
 			}
-			return "(-" + WriteExpression(left_expr) + ")";
+			if (statement_mode) {
+				// a view is evaluated by DuckDB
+				return "(-" + WriteExpression(left_expr) + ")";
+			}
+			if (!SQLiteFunctions::HasRepresentation(type)) {
+				throw SQLitePushdownNotSupported("unsupported negation of " + type.ToString());
+			}
+			// SQLite yields a floating point number for the negation of the minimum of BIGINT
+			return "duckdb_negate(" + WriteExpression(left_expr) + ", '" + SQLiteTypeName(type) + "')";
 		}
 		if (name == "+" && SQLiteIsNumericType(type)) {
 			return WriteExpression(left_expr);
@@ -1869,30 +2129,14 @@ string SQLiteSQLWriter::WriteArithmetic(const FunctionExpression &func, const st
 			// DuckDB computes these for floating point numbers as well
 			throw SQLitePushdownNotSupported("unsupported integer division / modulo");
 		}
-		if (name == "//") {
-			return WriteDivision(left_expr, right_expr, true);
-		}
-		// the minimum of a signed type modulo -1 overflows in DuckDB
+		// the minimum of a signed type divided by -1 (or modulo -1) overflows in DuckDB
 		LogicalType common_type;
 		if (!LogicalType::TryGetMaxLogicalType(context, left_type, right_type, common_type)) {
-			throw SQLitePushdownNotSupported("unsupported modulo");
+			throw SQLitePushdownNotSupported("unsupported integer division / modulo");
 		}
-		string minimum;
-		switch (common_type.id()) {
-		case LogicalTypeId::TINYINT:
-			minimum = to_string(NumericLimits<int8_t>::Minimum());
-			break;
-		case LogicalTypeId::SMALLINT:
-			minimum = to_string(NumericLimits<int16_t>::Minimum());
-			break;
-		case LogicalTypeId::INTEGER:
-			minimum = to_string(NumericLimits<int32_t>::Minimum());
-			break;
-		case LogicalTypeId::BIGINT:
-			minimum = to_string(NumericLimits<int64_t>::Minimum());
-			break;
-		default:
-			break;
+		auto minimum = SQLiteSignedMinimum(common_type);
+		if (name == "//") {
+			return WriteDivision(left_expr, right_expr, true, minimum);
 		}
 		Value value;
 		if (SQLiteCapabilities::TryGetConstantValue(right_expr, value) && !value.IsNull() &&
@@ -1970,11 +2214,23 @@ string SQLiteSQLWriter::WriteArithmetic(const FunctionExpression &func, const st
 	// + - *
 	if (SQLiteIsNumericOrDecimalType(left_type) && SQLiteIsNumericOrDecimalType(right_type)) {
 		// DECIMAL arithmetic is exact in DuckDB - it is only supported where the result is a DOUBLE
-		if (!SQLiteIsNumericType(RequireType(func))) {
+		auto result_type = RequireType(func);
+		if (!SQLiteIsNumericType(result_type)) {
 			throw SQLitePushdownNotSupported("unsupported arithmetic for " + left_type.ToString() + " and " +
 			                                 right_type.ToString());
 		}
-		return binary(name);
+		if (!SQLiteIsIntegerType(result_type) || statement_mode) {
+			// a view is evaluated by DuckDB
+			return binary(name);
+		}
+		if (!SQLiteFunctions::HasRepresentation(result_type)) {
+			// SQLite computes a HUGEINT (e.g. a sum) in 64 bits
+			throw SQLitePushdownNotSupported("unsupported arithmetic of " + result_type.ToString());
+		}
+		// SQLite yields a floating point number on overflow, DuckDB raises an error
+		auto function = name == "+" ? "duckdb_add(" : name == "-" ? "duckdb_subtract(" : "duckdb_multiply(";
+		return function + WriteExpression(left_expr) + ", " + WriteExpression(right_expr) + ", '" +
+		       SQLiteTypeName(result_type) + "')";
 	}
 	if (SQLiteIsTimestampType(left_type) && right_type.id() == LogicalTypeId::INTERVAL &&
 	    (name == "+" || name == "-")) {
@@ -2563,7 +2819,11 @@ bool SQLiteSQLWriter::TryWriteMathFunction(const FunctionExpression &func, const
 			}
 			result = "duckdb_trunc_precision(" + x + ", " + to_string(precision) + ")";
 		} else if (integer) {
-			result = "duckdb_round_integer(" + x + ", " + to_string(precision) + ", " + half_even + ")";
+			if (!SQLiteFunctions::HasRepresentation(result_type)) {
+				throw SQLitePushdownNotSupported("unsupported " + name + " of " + result_type.ToString());
+			}
+			result = "duckdb_round_integer(" + x + ", " + to_string(precision) + ", " + half_even + ", '" +
+			         SQLiteTypeName(result_type) + "')";
 		} else {
 			result = "duckdb_round(" + x + ", " + to_string(precision) + ", " + half_even + ")";
 		}
@@ -2844,6 +3104,8 @@ string SQLiteSQLWriter::WriteIntervalArithmetic(const ParsedExpression &value_ex
 
 string SQLiteSQLWriter::WriteAggregateCall(const string &name, const vector<FunctionArgument> &children,
                                            bool distinct) {
+	auto returns_sum = result_value;
+	result_value = false;
 	string distinct_str = distinct ? "DISTINCT " : "";
 	if ((name == "count_star" || name == "count") && children.empty()) {
 		return "count(*)";
@@ -2863,6 +3125,11 @@ string SQLiteSQLWriter::WriteAggregateCall(const string &name, const vector<Func
 			// DuckDB sums the integers exactly - SQLite as floating point numbers once the sum overflows
 			RequireExtensionFunctions("avg of integers");
 			return "duckdb_avg(" + distinct_str + WriteExpression(arg(0)) + ")";
+		}
+		if (returns_sum && SQLiteIsIntegerType(type)) {
+			// SQLite raises an error once the sum overflows, DuckDB sums the integers as a HUGEINT
+			RequireExtensionFunctions("sum of integers");
+			return "duckdb_sum(" + distinct_str + WriteExpression(arg(0)) + ")";
 		}
 		return string(name == "sum" ? "sum(" : "avg(") + distinct_str + WriteExpression(arg(0)) + ")";
 	}
@@ -3223,12 +3490,7 @@ string SQLiteSQLWriter::WriteBaseTableRef(const BaseTableRef &ref) {
 		auto alias = ref.alias.empty() ? name : WriteIdentifier(ref.alias);
 		if (!ref.column_name_alias.empty()) {
 			vector<string> names;
-			auto probe = make_uniq<SelectNode>();
-			probe->select_list.push_back(make_uniq<StarExpression>());
-			auto cte_ref = make_uniq<BaseTableRef>();
-			cte_ref->SetQualifiedName(ref.GetQualifiedName());
-			probe->from_table = std::move(cte_ref);
-			InferQueryTypes(*probe, &names);
+			InferCTETypes(ref, names);
 			if (names.empty()) {
 				throw SQLitePushdownNotSupported("cannot determine the columns of a CTE");
 			}
@@ -3370,7 +3632,7 @@ string SQLiteSQLWriter::WriteTableRef(const TableRef &ref) {
 		}
 		if (!subquery.column_name_alias.empty()) {
 			vector<string> names;
-			InferQueryTypes(*subquery.subquery->node, &names);
+			InferQueryTypesCached(*subquery.subquery->node, &names);
 			if (names.empty()) {
 				throw SQLitePushdownNotSupported("cannot determine the columns of a subquery");
 			}
@@ -3395,10 +3657,7 @@ string SQLiteSQLWriter::WriteTableRef(const TableRef &ref) {
 			result += (col > 0 ? ", " : "") + string("column") + to_string(col + 1) + " AS " + WriteIdentifier(name);
 		}
 		// the values are converted to the types of the columns, like DuckDB converts them (e.g. 1 and '1')
-		auto probe = make_uniq<SelectNode>();
-		probe->select_list.push_back(make_uniq<StarExpression>());
-		probe->from_table = const_cast<ExpressionListRef &>(expression_list).Copy(); // NOLINT: Copy is not const
-		auto types = InferQueryTypes(*probe);
+		auto types = InferValuesTypes(expression_list);
 		if (types.size() != column_count) {
 			throw SQLitePushdownNotSupported("cannot determine the types of a VALUES list");
 		}
@@ -3543,14 +3802,20 @@ string SQLiteSQLWriter::WriteCTEMap(const CommonTableExpressionMap &cte_map) {
 		}
 		auto &cte = *kv.second;
 		later_ctes.erase(kv.first);
-		if (!later_ctes.empty() && cte.query_node) {
-			// in DuckDB a CTE does not see the CTEs defined after it - a reference with the name of one is a table
+		// in DuckDB a CTE sees neither later CTEs nor itself unless recursive, SQLite reads such a table as the CTE
+		auto hidden_ctes = later_ctes;
+		if (cte.query_node && cte.query_node->type != QueryNodeType::RECURSIVE_CTE_NODE) {
+			hidden_ctes.insert(kv.first);
+		}
+		if (cte.query_node) {
 			auto definition = cte.query_node->Copy();
 			SQLiteWalkBaseTables(
 			    *definition, identifier_set_t(), [&](BaseTableRef &ref, const identifier_set_t &scope) {
 				    auto &name = ref.GetQualifiedName();
-				    if (name.Path().size() == 1 && later_ctes.count(name.Name()) > 0 && scope.count(name.Name()) == 0) {
-					    throw SQLitePushdownNotSupported("a CTE that refers to a table with the name of a later CTE");
+				    if (name.Path().size() == 1 && hidden_ctes.count(name.Name()) > 0 &&
+				        scope.count(name.Name()) == 0) {
+					    throw SQLitePushdownNotSupported("a CTE that refers to a table with the name of itself or of a "
+					                                     "later CTE");
 				    }
 			    });
 		}
@@ -3866,13 +4131,67 @@ unique_ptr<QueryNode> SQLiteSQLWriter::ExpandSelectAliases(const SelectNode &nod
 string SQLiteSQLWriter::WriteSelectNode(const SelectNode &node) {
 	auto expanded = ExpandSelectAliases(node);
 	if (expanded) {
+		if (result_node.get() == &node) {
+			result_node = expanded.get();
+		}
 		owned_nodes.push_back(std::move(expanded));
 		return WriteExpandedSelectNode(owned_nodes.back()->Cast<SelectNode>());
 	}
 	return WriteExpandedSelectNode(node);
 }
 
+static bool SQLiteIsSum(const ParsedExpression &expr) {
+	return expr.GetExpressionClass() == ExpressionClass::FUNCTION &&
+	       StringUtil::CIEquals(expr.Cast<FunctionExpression>().FunctionName().GetIdentifierName(), "sum");
+}
+
+//! Whether an expression in the select list of the result returns the values that SQLite cannot represent as text
+static bool SQLiteIsResultValue(const ParsedExpression &expr) {
+	return SQLiteIsSum(expr) || expr.GetExpressionClass() == ExpressionClass::CAST;
+}
+
+static bool SQLiteContainsResultValue(const ParsedExpression &expr) {
+	bool result = SQLiteIsResultValue(expr);
+	ParsedExpressionIterator::EnumerateChildren(
+	    expr, [&](const ParsedExpression &child) { result = result || SQLiteContainsResultValue(child); });
+	return result;
+}
+
+//! Whether a SELECT is ordered by one of the sums or casts of its select list
+static bool SQLiteOrdersByResultValue(const SelectNode &node) {
+	for (auto &modifier : node.modifiers) {
+		if (modifier->type != ResultModifierType::ORDER_MODIFIER) {
+			continue;
+		}
+		for (auto &order : modifier->Cast<OrderModifier>().orders) {
+			auto &key = *order.expression;
+			int64_t position;
+			if (key.GetExpressionClass() == ExpressionClass::STAR || SQLiteContainsResultValue(key)) {
+				return true;
+			}
+			if (SQLiteCapabilities::TryGetIntegerLiteral(key, position) && position >= 1 &&
+			    idx_t(position) <= node.select_list.size() && SQLiteIsResultValue(*node.select_list[position - 1])) {
+				return true;
+			}
+			if (key.GetExpressionClass() != ExpressionClass::COLUMN_REF ||
+			    key.Cast<ColumnRefExpression>().IsQualified()) {
+				continue;
+			}
+			for (auto &entry : node.select_list) {
+				if (SQLiteIsResultValue(*entry) &&
+				    entry->GetAlias() == key.Cast<ColumnRefExpression>().GetColumnName()) {
+					return true;
+				}
+			}
+		}
+	}
+	return false;
+}
+
 string SQLiteSQLWriter::WriteExpandedSelectNode(const SelectNode &node) {
+	// a sum or cast in the select list of the result can be returned as text, unless the result is ordered by it
+	bool result_values = result_node.get() == &node && !SQLiteOrdersByResultValue(node);
+	result_node = nullptr;
 	if (node.qualify || (node.having && node.groups.grouping_sets.empty())) {
 		// SQLite 3.38 requires a GROUP BY for a HAVING
 		return WriteFilteredSelectNode(node);
@@ -3909,7 +4228,9 @@ string SQLiteSQLWriter::WriteExpandedSelectNode(const SelectNode &node) {
 			result += ", ";
 		}
 		auto &select_expr = *node.select_list[i];
+		result_value = result_values && SQLiteIsResultValue(select_expr);
 		result += WriteExpression(select_expr);
+		result_value = false;
 		if (!select_expr.GetAlias().empty()) {
 			result += " AS " + WriteIdentifier(select_expr.GetAlias());
 		} else if (select_expr.GetExpressionClass() != ExpressionClass::STAR &&
@@ -3977,6 +4298,27 @@ unique_ptr<QueryNode> SQLiteSQLWriter::CastSetOperationChild(const QueryNode &no
 	}
 	// SQLite does not convert the values of the members of a set operation to a common type (e.g. the integer 42 and
 	// the string '42' are different values)
+	if (!node.modifiers.empty()) {
+		// converted after the ORDER BY / LIMIT / DISTINCT of the member, which would otherwise see the new values
+		case_insensitive_set_t unique_names;
+		auto select = make_uniq<SelectNode>();
+		for (idx_t i = 0; i < types.size(); i++) {
+			if (!unique_names.insert(names[i]).second) {
+				throw SQLitePushdownNotSupported("set operation member with duplicate column names whose types are "
+				                                 "converted");
+			}
+			unique_ptr<ParsedExpression> column = make_uniq<ColumnRefExpression>(Identifier(names[i]));
+			if (child_types[i] != types[i]) {
+				column = make_uniq<CastExpression>(types[i], std::move(column));
+			}
+			column->SetAlias(Identifier(names[i]));
+			select->select_list.push_back(std::move(column));
+		}
+		auto subquery = make_uniq<SelectStatement>();
+		subquery->node = node.Copy();
+		select->from_table = make_uniq<SubqueryRef>(std::move(subquery));
+		return std::move(select);
+	}
 	auto result = node.Copy();
 	switch (result->type) {
 	case QueryNodeType::SELECT_NODE: {
@@ -4416,7 +4758,7 @@ string SQLiteSQLWriter::WriteOnConflict(const OnConflictInfo &info, SQLiteTableE
 	if (info.action_type == OnConflictAction::THROW) {
 		return string();
 	}
-	if (table.non_binary_unique_key) {
+	if (table.HasNonBinaryUniqueKey(context)) {
 		// e.g. a NOCASE primary key - DuckDB compares the strings byte by byte
 		throw SQLitePushdownNotSupported("ON CONFLICT with a unique key with a collation");
 	}

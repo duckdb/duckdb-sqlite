@@ -13,6 +13,7 @@
 #include "duckdb/common/types/interval.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/timestamp.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/function/scalar/regexp.hpp"
 #include "duckdb/function/scalar/strftime_format.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
@@ -75,7 +76,7 @@ bool SQLiteFunctions::TryGetCanonicalText(const Value &value, string &result) {
 	return true;
 }
 
-void SQLiteFunctions::SetResult(sqlite3_context *context, const Value &value) {
+void SQLiteFunctions::SetResult(sqlite3_context *context, const Value &value, bool as_text) {
 	if (value.IsNull()) {
 		sqlite3_result_null(context);
 		return;
@@ -96,8 +97,13 @@ void SQLiteFunctions::SetResult(sqlite3_context *context, const Value &value) {
 	case LogicalTypeId::DOUBLE: {
 		auto result = DoubleValue::Get(value);
 		if (std::isnan(result)) {
-			throw InvalidInputException("NaN cannot be represented in SQLite - SET sqlite_enable_remote_pushdown = "
-			                            "false before attaching the database to execute the query in DuckDB");
+			if (!as_text) {
+				throw InvalidInputException("NaN cannot be represented in SQLite - SET sqlite_enable_remote_pushdown "
+				                            "= false before attaching the database to execute the query in DuckDB");
+			}
+			auto text = value.ToString();
+			sqlite3_result_text64(context, text.c_str(), text.size(), SQLITE_TRANSIENT, SQLITE_UTF8);
+			return;
 		}
 		sqlite3_result_double(context, result);
 		return;
@@ -116,10 +122,13 @@ void SQLiteFunctions::SetResult(sqlite3_context *context, const Value &value) {
 	case LogicalTypeId::TIMESTAMP: {
 		string text;
 		if (!TryGetCanonicalText(value, text)) {
-			throw InvalidInputException("The %s value \"%s\" cannot be represented in SQLite - SET "
-			                            "sqlite_enable_remote_pushdown = false before attaching the database to "
-			                            "execute the query in DuckDB",
-			                            value.type().ToString(), value.ToString());
+			if (!as_text) {
+				throw InvalidInputException("The %s value \"%s\" cannot be represented in SQLite - SET "
+				                            "sqlite_enable_remote_pushdown = false before attaching the database to "
+				                            "execute the query in DuckDB",
+				                            value.type().ToString(), value.ToString());
+			}
+			text = value.ToString();
 		}
 		sqlite3_result_text64(context, text.c_str(), text.size(), SQLITE_TRANSIENT, SQLITE_UTF8);
 		return;
@@ -156,20 +165,125 @@ static string SQLiteTextArgument(sqlite3_value *value) {
 	return string(data ? const_char_ptr_cast(data) : "", NumericCast<idx_t>(sqlite3_value_bytes(value)));
 }
 
-//! The types of a cast are constant for a statement - they are parsed once and kept as auxiliary data
+//! Keeps auxiliary data with an argument - SQLite keeps it for the next calls of the statement if the argument is
+//! constant
+template <class T>
+static T &SQLiteSetAuxiliaryData(sqlite3_context *context, int index, unique_ptr<T> data) {
+	sqlite3_set_auxdata(context, index, data.release(), [](void *ptr) { delete static_cast<T *>(ptr); });
+	auto cached = static_cast<T *>(sqlite3_get_auxdata(context, index));
+	if (!cached) {
+		throw InternalException("Failed to cache the auxiliary data of a SQLite function");
+	}
+	return *cached;
+}
+
+static LogicalType SQLiteParseTypeArgument(sqlite3_value *value) {
+	return LogicalType(TransformStringToLogicalTypeId(SQLiteTextArgument(value)));
+}
+
+//! The type arguments of a function are constant for a statement - they are parsed once
 static const LogicalType &SQLiteTypeArgument(sqlite3_context *context, sqlite3_value **argv, int index) {
 	auto cached = static_cast<LogicalType *>(sqlite3_get_auxdata(context, index));
 	if (cached) {
 		return *cached;
 	}
-	auto type_id = TransformStringToLogicalTypeId(SQLiteTextArgument(argv[index]));
-	auto type = new LogicalType(type_id);
-	sqlite3_set_auxdata(context, index, type, [](void *ptr) { delete static_cast<LogicalType *>(ptr); });
-	cached = static_cast<LogicalType *>(sqlite3_get_auxdata(context, index));
-	if (!cached) {
-		throw InternalException("Failed to cache the type argument of a SQLite function");
+	return SQLiteSetAuxiliaryData(context, index, make_uniq<LogicalType>(SQLiteParseTypeArgument(argv[index])));
+}
+
+//! A cast of text without a VARCHAR value - false if it fails
+typedef bool (*sqlite_text_cast_t)(string_t input, Value &result);
+
+//! The operator of DuckDB's VARCHAR cast - for DATE / TIMESTAMP, TryCastErrorMessage fails in the same cases
+template <class T>
+static bool SQLiteTextCast(string_t input, Value &result) {
+	T value;
+	if (!TryCast::Operation<string_t, T>(input, value, false)) {
+		return false;
 	}
-	return *cached;
+	result = Value::CreateValue(value);
+	return true;
+}
+
+static sqlite_text_cast_t SQLiteGetTextCast(const LogicalType &source_type, const LogicalType &target_type) {
+	if (source_type.id() != LogicalTypeId::VARCHAR) {
+		return nullptr;
+	}
+	switch (target_type.id()) {
+	case LogicalTypeId::BOOLEAN:
+		return SQLiteTextCast<bool>;
+	case LogicalTypeId::TINYINT:
+		return SQLiteTextCast<int8_t>;
+	case LogicalTypeId::SMALLINT:
+		return SQLiteTextCast<int16_t>;
+	case LogicalTypeId::INTEGER:
+		return SQLiteTextCast<int32_t>;
+	case LogicalTypeId::BIGINT:
+		return SQLiteTextCast<int64_t>;
+	case LogicalTypeId::UTINYINT:
+		return SQLiteTextCast<uint8_t>;
+	case LogicalTypeId::USMALLINT:
+		return SQLiteTextCast<uint16_t>;
+	case LogicalTypeId::UINTEGER:
+		return SQLiteTextCast<uint32_t>;
+	case LogicalTypeId::DOUBLE:
+		return SQLiteTextCast<double>;
+	case LogicalTypeId::DATE:
+		return SQLiteTextCast<date_t>;
+	case LogicalTypeId::TIMESTAMP:
+		return SQLiteTextCast<timestamp_t>;
+	default:
+		return nullptr;
+	}
+}
+
+//! A cast from a source to a target type, which is bound once for a statement
+struct SQLiteCast {
+	SQLiteCast(LogicalType source_type_p, LogicalType target_type_p)
+	    : source_type(std::move(source_type_p)), target_type(std::move(target_type_p)),
+	      text_cast(SQLiteGetTextCast(source_type, target_type)),
+	      function(set.GetCastFunction(source_type, target_type, get_input)) {
+		if (function.HasInitLocalState()) {
+			CastLocalStateParameters parameters(get_input.context, function.GetCastData());
+			local_state = function.InitLocalState(parameters);
+		}
+	}
+
+	//! Value::TryCastAs / Value::CastAs with the bound function
+	Value Cast(const Value &source, bool try_cast) {
+		if (source.type() == target_type) {
+			return source;
+		}
+		Vector input(source, count_t(1));
+		Vector result(target_type, 1);
+		string error;
+		CastParameters parameters(function.GetCastData(), false, &error, local_state.get());
+		if (!function.Cast(input, result, 1, parameters)) {
+			if (try_cast) {
+				return Value(target_type);
+			}
+			throw InvalidInputException("Failed to cast value: %s", error);
+		}
+		return result.GetValue(0);
+	}
+
+	LogicalType source_type;
+	LogicalType target_type;
+	//! The cast of SQLite text, if there is one
+	sqlite_text_cast_t text_cast;
+	CastFunctionSet set;
+	GetCastFunctionInput get_input;
+	BoundCastInfo function;
+	unique_ptr<FunctionLocalState> local_state;
+};
+
+//! The cast of a statement - kept with its target type argument, and bound again if the source type argument changes
+static SQLiteCast &SQLiteCastArgument(sqlite3_context *context, sqlite3_value **argv) {
+	auto &source_type = SQLiteTypeArgument(context, argv, 1);
+	auto cached = static_cast<SQLiteCast *>(sqlite3_get_auxdata(context, 2));
+	if (cached && cached->source_type == source_type) {
+		return *cached;
+	}
+	return SQLiteSetAuxiliaryData(context, 2, make_uniq<SQLiteCast>(source_type, SQLiteParseTypeArgument(argv[2])));
 }
 
 //===--------------------------------------------------------------------===//
@@ -180,19 +294,31 @@ static void SQLiteErrorFunction(sqlite3_context *context, int argc, sqlite3_valu
 	sqlite3_result_error(context, message.c_str(), -1);
 }
 
-//! duckdb_cast(value, source_type, target_type) - a DuckDB cast of a value of the source type
-template <bool TRY_CAST>
+//! duckdb_cast(value, source_type, target_type) - a DuckDB cast of a value of the source type. duckdb_cast_result
+//! returns the results that SQLite cannot represent as their text, for the select list of the result that DuckDB reads.
+template <bool TRY_CAST, bool RESULT>
 static void SQLiteCastFunction(sqlite3_context *context, int argc, sqlite3_value **argv) {
 	SQLiteRunFunction(context, [&]() {
-		auto &source_type = SQLiteTypeArgument(context, argv, 1);
-		auto &target_type = SQLiteTypeArgument(context, argv, 2);
-		auto source = SQLiteUtils::ToDuckDBValue(SQLiteUtils::ReadValue(argv[0]), source_type);
-		if (TRY_CAST) {
-			auto result = source.DefaultTryCastAs(target_type);
-			SQLiteFunctions::SetResult(context, result ? *result : Value(target_type));
-		} else {
-			SQLiteFunctions::SetResult(context, source.DefaultCastAs(target_type));
+		auto &cast = SQLiteCastArgument(context, argv);
+		if (cast.text_cast && sqlite3_value_type(argv[0]) == SQLITE_TEXT) {
+			auto data = const_char_ptr_cast(sqlite3_value_text(argv[0]));
+			auto size = NumericCast<uint32_t>(sqlite3_value_bytes(argv[0]));
+			// invalid UTF-8 is rejected by the VARCHAR value of the cast below
+			if (Value::StringIsValid(data, size)) {
+				Value result;
+				if (cast.text_cast(string_t(data, size), result)) {
+					SQLiteFunctions::SetResult(context, result, RESULT);
+					return;
+				}
+				if (TRY_CAST) {
+					sqlite3_result_null(context);
+					return;
+				}
+				// the cast below raises the error
+			}
 		}
+		auto source = SQLiteUtils::ToDuckDBValue(SQLiteUtils::ReadValue(argv[0]), cast.source_type);
+		SQLiteFunctions::SetResult(context, cast.Cast(source, TRY_CAST), RESULT);
 	});
 }
 
@@ -559,6 +685,100 @@ static void SQLiteShiftRightFunction(sqlite3_context *context, int argc, sqlite3
 	sqlite3_result_int64(context, shift >= 0 && shift < bits ? input >> shift : 0);
 }
 
+template <class T>
+static bool SQLiteTryNarrow(const hugeint_t &value, int64_t &result) {
+	T narrowed;
+	if (!Hugeint::TryCast<T>(value, narrowed)) {
+		return false;
+	}
+	result = int64_t(narrowed);
+	return true;
+}
+
+//! Whether an integer is a value of an integer type that SQLite can represent
+static bool SQLiteTryCastInteger(const hugeint_t &value, const LogicalType &type, int64_t &result) {
+	switch (type.id()) {
+	case LogicalTypeId::TINYINT:
+		return SQLiteTryNarrow<int8_t>(value, result);
+	case LogicalTypeId::SMALLINT:
+		return SQLiteTryNarrow<int16_t>(value, result);
+	case LogicalTypeId::INTEGER:
+		return SQLiteTryNarrow<int32_t>(value, result);
+	case LogicalTypeId::BIGINT:
+		return SQLiteTryNarrow<int64_t>(value, result);
+	case LogicalTypeId::UTINYINT:
+		return SQLiteTryNarrow<uint8_t>(value, result);
+	case LogicalTypeId::USMALLINT:
+		return SQLiteTryNarrow<uint16_t>(value, result);
+	case LogicalTypeId::UINTEGER:
+		return SQLiteTryNarrow<uint32_t>(value, result);
+	default:
+		throw InternalException("Unsupported integer type %s", type.ToString());
+	}
+}
+
+//! Whether the operands are integers - SQLite also stores other values in integer columns (e.g. a REAL)
+static bool SQLiteIntegerOperands(int argc, sqlite3_value **argv) {
+	for (int i = 0; i < argc; i++) {
+		if (sqlite3_value_numeric_type(argv[i]) != SQLITE_INTEGER) {
+			return false;
+		}
+	}
+	return true;
+}
+
+//! duckdb_add(x, y, type) / duckdb_subtract / duckdb_multiply - integer arithmetic that fails on overflow like DuckDB
+template <char OP>
+static void SQLiteIntegerArithmeticFunction(sqlite3_context *context, int argc, sqlite3_value **argv) {
+	if (SQLiteHasNull(2, argv)) {
+		sqlite3_result_null(context);
+		return;
+	}
+	if (!SQLiteIntegerOperands(2, argv)) {
+		// other values are computed like SQLite's operator does
+		double x = sqlite3_value_double(argv[0]);
+		double y = sqlite3_value_double(argv[1]);
+		sqlite3_result_double(context, OP == '+' ? x + y : OP == '-' ? x - y : x * y);
+		return;
+	}
+	SQLiteRunFunction(context, [&]() {
+		auto &type = SQLiteTypeArgument(context, argv, 2);
+		int64_t x = sqlite3_value_int64(argv[0]);
+		int64_t y = sqlite3_value_int64(argv[1]);
+		hugeint_t result = OP == '+'   ? hugeint_t(x) + hugeint_t(y)
+		                   : OP == '-' ? hugeint_t(x) - hugeint_t(y)
+		                               : hugeint_t(x) * hugeint_t(y);
+		int64_t value;
+		if (!SQLiteTryCastInteger(result, type, value)) {
+			auto operation = OP == '+' ? "addition" : OP == '-' ? "subtraction" : "multiplication";
+			throw OutOfRangeException("Overflow in %s of %s (%s %s %s)!", operation,
+			                          TypeIdToString(type.InternalType()), NumericHelper::ToString(x), string(1, OP),
+			                          NumericHelper::ToString(y));
+		}
+		sqlite3_result_int64(context, value);
+	});
+}
+
+//! duckdb_negate(x, type)
+static void SQLiteNegateFunction(sqlite3_context *context, int argc, sqlite3_value **argv) {
+	if (SQLiteHasNull(1, argv)) {
+		sqlite3_result_null(context);
+		return;
+	}
+	if (!SQLiteIntegerOperands(1, argv)) {
+		sqlite3_result_double(context, -sqlite3_value_double(argv[0]));
+		return;
+	}
+	SQLiteRunFunction(context, [&]() {
+		auto &type = SQLiteTypeArgument(context, argv, 1);
+		int64_t value;
+		if (!SQLiteTryCastInteger(-hugeint_t(sqlite3_value_int64(argv[0])), type, value)) {
+			throw OutOfRangeException("Overflow in negation of numeric value!");
+		}
+		sqlite3_result_int64(context, value);
+	});
+}
+
 //! duckdb_check_type(value, type, column) - raises the error the table scan raises for a value whose storage class
 //! does not match the type of its column (BIGINT, DOUBLE or VARCHAR)
 static void SQLiteCheckTypeFunction(sqlite3_context *context, int argc, sqlite3_value **argv) {
@@ -657,13 +877,14 @@ static void SQLiteRoundFunction(sqlite3_context *context, int argc, sqlite3_valu
 	});
 }
 
-//! duckdb_round_integer(x, precision, half_even) - rounding of integers to a negative precision
+//! duckdb_round_integer(x, precision, half_even, type) - rounding of integers to a negative precision
 static void SQLiteRoundIntegerFunction(sqlite3_context *context, int argc, sqlite3_value **argv) {
 	if (SQLiteHasNull(argc, argv)) {
 		sqlite3_result_null(context);
 		return;
 	}
 	SQLiteRunFunction(context, [&]() {
+		auto &type = SQLiteTypeArgument(context, argv, 3);
 		int64_t input = sqlite3_value_int64(argv[0]);
 		int64_t precision = sqlite3_value_int64(argv[1]);
 		bool half_even = sqlite3_value_int64(argv[2]) != 0;
@@ -690,7 +911,7 @@ static void SQLiteRoundIntegerFunction(sqlite3_context *context, int argc, sqlit
 		}
 		hugeint_t result;
 		int64_t result_value;
-		if (!Hugeint::TryMultiply(rounded, power_of_ten, result) || !Hugeint::TryCast(result, result_value)) {
+		if (!Hugeint::TryMultiply(rounded, power_of_ten, result) || !SQLiteTryCastInteger(result, type, result_value)) {
 			throw OutOfRangeException("Overflow in %s of integer", half_even ? "ROUND_EVEN" : "ROUND");
 		}
 		sqlite3_result_int64(context, result_value);
@@ -1444,6 +1665,52 @@ static void SQLiteAvgValue(sqlite3_context *context) {
 	});
 }
 
+//! duckdb_sum(x) - an exact sum of integers like DuckDB's HUGEINT sum, as text when SQLite cannot represent it
+struct SQLiteSumState {
+	hugeint_t integer_sum;
+	double double_sum;
+	bool has_value;
+	bool has_double;
+};
+
+static void SQLiteSumStep(sqlite3_context *context, int argc, sqlite3_value **argv) {
+	auto type = sqlite3_value_type(argv[0]);
+	if (type == SQLITE_NULL) {
+		return;
+	}
+	auto state = static_cast<SQLiteSumState *>(sqlite3_aggregate_context(context, sizeof(SQLiteSumState)));
+	if (!state) {
+		sqlite3_result_error_nomem(context);
+		return;
+	}
+	state->has_value = true;
+	if (type == SQLITE_INTEGER) {
+		state->integer_sum += hugeint_t(sqlite3_value_int64(argv[0]));
+	} else {
+		state->double_sum += SQLiteDoubleArgument(argv[0]);
+		state->has_double = true;
+	}
+}
+
+static void SQLiteSumFinal(sqlite3_context *context) {
+	auto state = static_cast<SQLiteSumState *>(sqlite3_aggregate_context(context, 0));
+	if (!state || !state->has_value) {
+		sqlite3_result_null(context);
+		return;
+	}
+	if (state->has_double) {
+		SQLiteSetDouble(context, Hugeint::Cast<double>(state->integer_sum) + state->double_sum);
+		return;
+	}
+	int64_t result;
+	if (Hugeint::TryCast(state->integer_sum, result)) {
+		sqlite3_result_int64(context, result);
+		return;
+	}
+	auto text = state->integer_sum.ToString();
+	sqlite3_result_text64(context, text.c_str(), text.size(), SQLITE_TRANSIENT, SQLITE_UTF8);
+}
+
 //! duckdb_frame_sum(x) / duckdb_frame_avg(x) - window functions that sum the values of the frame from scratch,
 //! instead of subtracting the values that leave the frame from the sum (which can lose all floating point precision)
 struct SQLiteFrameState {
@@ -1868,8 +2135,10 @@ void SQLiteFunctions::Register(sqlite3 *db) {
 		void (*function)(sqlite3_context *, int, sqlite3_value **);
 	};
 	static const ScalarFunctionDefinition SCALAR_FUNCTIONS[] = {
-	    {"duckdb_cast", 3, SQLiteCastFunction<false>},
-	    {"duckdb_try_cast", 3, SQLiteCastFunction<true>},
+	    {"duckdb_cast", 3, SQLiteCastFunction<false, false>},
+	    {"duckdb_try_cast", 3, SQLiteCastFunction<true, false>},
+	    {"duckdb_cast_result", 3, SQLiteCastFunction<false, true>},
+	    {"duckdb_try_cast_result", 3, SQLiteCastFunction<true, true>},
 	    {"duckdb_date", 1, SQLiteReadFunction<LogicalTypeId::DATE>},
 	    {"duckdb_timestamp", 1, SQLiteReadFunction<LogicalTypeId::TIMESTAMP>},
 	    {"duckdb_lower", 1, SQLiteCaseConvertFunction<false>},
@@ -1886,10 +2155,14 @@ void SQLiteFunctions::Register(sqlite3 *db) {
 	    {"duckdb_check_type", 3, SQLiteCheckTypeFunction},
 	    {"duckdb_shift_left", 3, SQLiteShiftLeftFunction},
 	    {"duckdb_shift_right", 3, SQLiteShiftRightFunction},
+	    {"duckdb_add", 3, SQLiteIntegerArithmeticFunction<'+'>},
+	    {"duckdb_subtract", 3, SQLiteIntegerArithmeticFunction<'-'>},
+	    {"duckdb_multiply", 3, SQLiteIntegerArithmeticFunction<'*'>},
+	    {"duckdb_negate", 2, SQLiteNegateFunction},
 	    {"duckdb_log", 2, SQLiteLogBaseFunction},
 	    {"duckdb_round", 3, SQLiteRoundFunction<false>},
 	    {"duckdb_trunc_precision", 2, SQLiteRoundFunction<true>},
-	    {"duckdb_round_integer", 3, SQLiteRoundIntegerFunction},
+	    {"duckdb_round_integer", 4, SQLiteRoundIntegerFunction},
 	    {"duckdb_date_part", 2, SQLiteDatePartFunction},
 	    {"duckdb_date_trunc", 2, SQLiteDateTruncFunction},
 	    {"duckdb_date_diff", 3, SQLiteDateDiffFunction},
@@ -1947,6 +2220,7 @@ void SQLiteFunctions::Register(sqlite3 *db) {
 	    {"duckdb_stddev_pop", 1, SQLiteSafeStep<SQLiteVarianceStep>,
 	     SQLiteSafeFinal<SQLiteVarianceFinal<SQLiteVarianceKind::STDDEV_POP>>},
 	    {"duckdb_product", 1, SQLiteSafeStep<SQLiteProductStep>, SQLiteSafeFinal<SQLiteProductFinal>},
+	    {"duckdb_sum", 1, SQLiteSafeStep<SQLiteSumStep>, SQLiteSafeFinal<SQLiteSumFinal>},
 	    {"duckdb_bit_and", 1, SQLiteSafeStep<SQLiteBitStep<SQLiteBitKind::AND>>, SQLiteSafeFinal<SQLiteBitFinal>},
 	    {"duckdb_bit_or", 1, SQLiteSafeStep<SQLiteBitStep<SQLiteBitKind::OR>>, SQLiteSafeFinal<SQLiteBitFinal>},
 	    {"duckdb_bit_xor", 1, SQLiteSafeStep<SQLiteBitStep<SQLiteBitKind::XOR>>, SQLiteSafeFinal<SQLiteBitFinal>},

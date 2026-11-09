@@ -216,7 +216,7 @@ physical_plan	<REGEX>:(?s).*Sqlite Query.*GROUP BY \("id" % 3\) HAVING \(\("id" 
 query II
 EXPLAIN SELECT i AS x, x + 1 FROM s.t
 ----
-physical_plan	<REGEX>:(?s).*Sqlite Query.*\("i" \+ 1\) AS "\(x \+ 1\)".*
+physical_plan	<REGEX>:(?s).*Sqlite Query.*duckdb_add\("i", 1, 'BIGINT'\) AS "\(x \+ 1\)".*
 
 foreach db l s
 

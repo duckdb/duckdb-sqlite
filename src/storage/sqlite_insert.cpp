@@ -31,6 +31,8 @@ public:
 	explicit SQLiteInsertGlobalState(ClientContext &context) : insert_count(0), column_count(0) {
 	}
 
+	optional_ptr<SQLiteTransaction> transaction;
+	string table_name;
 	SQLiteStatement statement;
 	idx_t insert_count;
 	//! The number of columns in the INSERT statement
@@ -74,6 +76,8 @@ unique_ptr<GlobalSinkState> SQLiteInsert::GetGlobalSinkState(ClientContext &cont
 	}
 	auto &transaction = SQLiteTransaction::Get(context, insert_table->catalog);
 	auto result = make_uniq<SQLiteInsertGlobalState>(context);
+	result->transaction = transaction;
+	result->table_name = insert_table->name.GetIdentifierName();
 	result->statement = transaction.GetDB().Prepare(GetInsertSQL(insert_table, result->column_count));
 	return std::move(result);
 }
@@ -108,6 +112,7 @@ SinkResultType SQLiteInsert::Sink(ExecutionContext &context, DataChunk &chunk, O
 SourceResultType SQLiteInsert::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
                                                OperatorSourceInput &input) const {
 	auto &insert_gstate = sink_state->Cast<SQLiteInsertGlobalState>();
+	insert_gstate.transaction->ClearRowIdInfo(insert_gstate.table_name);
 	chunk.SetChildCardinality(1);
 	chunk.data[0].SetValue(0, Value::BIGINT(insert_gstate.insert_count));
 	FlatVector::SetSize(chunk.data[0], count_t(1));

@@ -19,10 +19,13 @@ SQLiteUpdate::SQLiteUpdate(PhysicalPlan &physical_plan, LogicalOperator &op, Tab
 //===--------------------------------------------------------------------===//
 class SQLiteUpdateGlobalState : public GlobalSinkState {
 public:
-	explicit SQLiteUpdateGlobalState(SQLiteTableEntry &table) : table(table), update_count(0) {
+	SQLiteUpdateGlobalState(SQLiteTableEntry &table, SQLiteTransaction &transaction)
+	    : table(table), transaction(transaction), table_name(table.name.GetIdentifierName()), update_count(0) {
 	}
 
 	SQLiteTableEntry &table;
+	SQLiteTransaction &transaction;
+	string table_name;
 	SQLiteStatement statement;
 	idx_t update_count;
 };
@@ -47,7 +50,7 @@ unique_ptr<GlobalSinkState> SQLiteUpdate::GetGlobalSinkState(ClientContext &cont
 	auto &sqlite_table = table.Cast<SQLiteTableEntry>();
 
 	auto &transaction = SQLiteTransaction::Get(context, sqlite_table.catalog);
-	auto result = make_uniq<SQLiteUpdateGlobalState>(sqlite_table);
+	auto result = make_uniq<SQLiteUpdateGlobalState>(sqlite_table, transaction);
 	auto &db = transaction.GetDB();
 	auto rowid_name = sqlite_table.GetWriteRowIdName(db);
 	result->statement = db.Prepare(GetUpdateSQL(sqlite_table, columns, rowid_name));
@@ -86,6 +89,7 @@ SinkResultType SQLiteUpdate::Sink(ExecutionContext &context, DataChunk &chunk, O
 SourceResultType SQLiteUpdate::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
                                                OperatorSourceInput &input) const {
 	auto &insert_gstate = sink_state->Cast<SQLiteUpdateGlobalState>();
+	insert_gstate.transaction.ClearRowIdInfo(insert_gstate.table_name);
 	chunk.SetChildCardinality(1);
 	chunk.data[0].SetValue(0, Value::BIGINT(insert_gstate.update_count));
 	FlatVector::SetSize(chunk.data[0], count_t(1));

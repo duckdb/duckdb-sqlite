@@ -22,6 +22,8 @@ public:
 	optional_ptr<CatalogEntry> GetEntry(const string &entry_name);
 	void EraseEntry(const string &entry_name);
 	void Clear();
+	void ClearRowIdInfo();
+	void ClearRowIdInfo(const string &table_name);
 
 private:
 	mutex lock;
@@ -57,6 +59,23 @@ void SQLiteCatalogMap::EraseEntry(const string &entry_name) {
 void SQLiteCatalogMap::Clear() {
 	lock_guard<mutex> guard(lock);
 	catalog_entries.clear();
+}
+
+void SQLiteCatalogMap::ClearRowIdInfo() {
+	lock_guard<mutex> guard(lock);
+	for (auto &entry : catalog_entries) {
+		if (entry.second->type == CatalogType::TABLE_ENTRY) {
+			entry.second->Cast<SQLiteTableEntry>().ClearRowIdInfo();
+		}
+	}
+}
+
+void SQLiteCatalogMap::ClearRowIdInfo(const string &table_name) {
+	lock_guard<mutex> guard(lock);
+	auto entry = catalog_entries.find(table_name);
+	if (entry != catalog_entries.end() && entry->second->type == CatalogType::TABLE_ENTRY) {
+		entry->second->Cast<SQLiteTableEntry>().ClearRowIdInfo();
+	}
 }
 
 SQLiteTransaction::SQLiteTransaction(SQLiteCatalog &sqlite_catalog, TransactionManager &manager, ClientContext &context)
@@ -201,20 +220,19 @@ optional_ptr<CatalogEntry> SQLiteTransaction::GetCatalogEntry(const string &entr
 	switch (type) {
 	case CatalogType::TABLE_ENTRY: {
 		CreateTableInfo info(sqlite_catalog.GetMainSchema(), Identifier(entry_name));
-		bool all_varchar = SQLiteUtils::AllVarchar(*context.lock());
+		auto client_context = context.lock();
+		bool all_varchar = SQLiteUtils::AllVarchar(*client_context);
 		vector<bool> utf8_text_affinity;
-		string rowid_name;
-		GetDB().GetTableInfo(entry_name, info.columns, info.constraints, all_varchar, utf8_text_affinity, rowid_name);
+		SQLiteTableShape shape;
+		GetDB().GetTableInfo(entry_name, sqlite_catalog.HasUTF8Encoding(*client_context), info.columns,
+		                     info.constraints, all_varchar, utf8_text_affinity, shape);
 		D_ASSERT(!info.columns.empty());
 
 		auto table = make_uniq<SQLiteTableEntry>(sqlite_catalog, sqlite_catalog.GetMainSchema(), info, all_varchar,
-		                                         std::move(utf8_text_affinity), std::move(rowid_name));
+		                                         std::move(utf8_text_affinity), std::move(shape));
 		if (sqlite_catalog.options.remote_pushdown) {
-			// only the SQL that remote pushdown generates depends on these - they are not read otherwise, as they
-			// take several statements per table
+			// only the SQL that remote pushdown generates depends on these - the indexes are read when it needs them
 			table->binary_collation = GetDB().GetBinaryCollation(entry_name, table->GetColumns());
-			table->indexed_columns =
-			    GetDB().GetIndexedColumns(entry_name, table->non_binary_unique_key, table->generated_columns);
 			table->real_affinity = GetDB().GetRealAffinity(entry_name, table->GetColumns());
 			table->has_pushdown_info = true;
 		}
@@ -269,6 +287,14 @@ void SQLiteTransaction::ClearTableEntry(const string &table_name) {
 
 void SQLiteTransaction::ClearCatalogCache() {
 	catalog_map->Clear();
+}
+
+void SQLiteTransaction::ClearRowIdInfo() {
+	catalog_map->ClearRowIdInfo();
+}
+
+void SQLiteTransaction::ClearRowIdInfo(const string &table_name) {
+	catalog_map->ClearRowIdInfo(table_name);
 }
 
 string GetDropSQL(CatalogType type, const string &table_name, bool cascade) {

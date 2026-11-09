@@ -275,8 +275,7 @@ bool SQLiteCatalog::HasUTF8Encoding(ClientContext &context) {
 	lock_guard<mutex> guard(encoding_lock);
 	if (!utf8_encoding.IsValid()) {
 		auto &db = SQLiteTransaction::Get(context, *this).GetDB();
-		auto stmt = db.Prepare("PRAGMA encoding");
-		utf8_encoding = stmt.Step() && stmt.GetValue<string>(0) == "UTF-8" ? 1 : 0;
+		utf8_encoding = db.IsUTF8() ? 1 : 0;
 	}
 	return utf8_encoding.GetIndex() == 1;
 }

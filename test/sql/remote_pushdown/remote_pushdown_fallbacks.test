@@ -119,7 +119,7 @@ endloop
 query II
 EXPLAIN SELECT sum(j) FROM s.v
 ----
-physical_plan	<REGEX>:(?s).*Sqlite Query.*FROM \(SELECT \("i" \* 10\) AS "j".*
+physical_plan	<REGEX>:(?s).*Sqlite Query.*FROM \(SELECT duckdb_multiply\("i", 10, 'BIGINT'\) AS "j".*
 
 query II
 EXPLAIN SELECT i, sum(i) OVER (ORDER BY i ROWS BETWEEN 1.5 PRECEDING AND CURRENT ROW) FROM s.t
