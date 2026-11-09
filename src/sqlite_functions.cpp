@@ -13,6 +13,7 @@
 #include "duckdb/common/types/interval.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/timestamp.hpp"
+#include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/function/scalar/regexp.hpp"
 #include "duckdb/function/scalar/strftime_format.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
@@ -164,20 +165,125 @@ static string SQLiteTextArgument(sqlite3_value *value) {
 	return string(data ? const_char_ptr_cast(data) : "", NumericCast<idx_t>(sqlite3_value_bytes(value)));
 }
 
-//! The types of a cast are constant for a statement - they are parsed once and kept as auxiliary data
+//! Keeps auxiliary data with an argument - SQLite keeps it for the next calls of the statement if the argument is
+//! constant
+template <class T>
+static T &SQLiteSetAuxiliaryData(sqlite3_context *context, int index, unique_ptr<T> data) {
+	sqlite3_set_auxdata(context, index, data.release(), [](void *ptr) { delete static_cast<T *>(ptr); });
+	auto cached = static_cast<T *>(sqlite3_get_auxdata(context, index));
+	if (!cached) {
+		throw InternalException("Failed to cache the auxiliary data of a SQLite function");
+	}
+	return *cached;
+}
+
+static LogicalType SQLiteParseTypeArgument(sqlite3_value *value) {
+	return LogicalType(TransformStringToLogicalTypeId(SQLiteTextArgument(value)));
+}
+
+//! The type arguments of a function are constant for a statement - they are parsed once
 static const LogicalType &SQLiteTypeArgument(sqlite3_context *context, sqlite3_value **argv, int index) {
 	auto cached = static_cast<LogicalType *>(sqlite3_get_auxdata(context, index));
 	if (cached) {
 		return *cached;
 	}
-	auto type_id = TransformStringToLogicalTypeId(SQLiteTextArgument(argv[index]));
-	auto type = new LogicalType(type_id);
-	sqlite3_set_auxdata(context, index, type, [](void *ptr) { delete static_cast<LogicalType *>(ptr); });
-	cached = static_cast<LogicalType *>(sqlite3_get_auxdata(context, index));
-	if (!cached) {
-		throw InternalException("Failed to cache the type argument of a SQLite function");
+	return SQLiteSetAuxiliaryData(context, index, make_uniq<LogicalType>(SQLiteParseTypeArgument(argv[index])));
+}
+
+//! A cast of text without a VARCHAR value - false if it fails
+typedef bool (*sqlite_text_cast_t)(string_t input, Value &result);
+
+//! The operator of DuckDB's VARCHAR cast - for DATE / TIMESTAMP, TryCastErrorMessage fails in the same cases
+template <class T>
+static bool SQLiteTextCast(string_t input, Value &result) {
+	T value;
+	if (!TryCast::Operation<string_t, T>(input, value, false)) {
+		return false;
 	}
-	return *cached;
+	result = Value::CreateValue(value);
+	return true;
+}
+
+static sqlite_text_cast_t SQLiteGetTextCast(const LogicalType &source_type, const LogicalType &target_type) {
+	if (source_type.id() != LogicalTypeId::VARCHAR) {
+		return nullptr;
+	}
+	switch (target_type.id()) {
+	case LogicalTypeId::BOOLEAN:
+		return SQLiteTextCast<bool>;
+	case LogicalTypeId::TINYINT:
+		return SQLiteTextCast<int8_t>;
+	case LogicalTypeId::SMALLINT:
+		return SQLiteTextCast<int16_t>;
+	case LogicalTypeId::INTEGER:
+		return SQLiteTextCast<int32_t>;
+	case LogicalTypeId::BIGINT:
+		return SQLiteTextCast<int64_t>;
+	case LogicalTypeId::UTINYINT:
+		return SQLiteTextCast<uint8_t>;
+	case LogicalTypeId::USMALLINT:
+		return SQLiteTextCast<uint16_t>;
+	case LogicalTypeId::UINTEGER:
+		return SQLiteTextCast<uint32_t>;
+	case LogicalTypeId::DOUBLE:
+		return SQLiteTextCast<double>;
+	case LogicalTypeId::DATE:
+		return SQLiteTextCast<date_t>;
+	case LogicalTypeId::TIMESTAMP:
+		return SQLiteTextCast<timestamp_t>;
+	default:
+		return nullptr;
+	}
+}
+
+//! A cast from a source to a target type, which is bound once for a statement
+struct SQLiteCast {
+	SQLiteCast(LogicalType source_type_p, LogicalType target_type_p)
+	    : source_type(std::move(source_type_p)), target_type(std::move(target_type_p)),
+	      text_cast(SQLiteGetTextCast(source_type, target_type)),
+	      function(set.GetCastFunction(source_type, target_type, get_input)) {
+		if (function.HasInitLocalState()) {
+			CastLocalStateParameters parameters(get_input.context, function.GetCastData());
+			local_state = function.InitLocalState(parameters);
+		}
+	}
+
+	//! Value::TryCastAs / Value::CastAs with the bound function
+	Value Cast(const Value &source, bool try_cast) {
+		if (source.type() == target_type) {
+			return source;
+		}
+		Vector input(source, count_t(1));
+		Vector result(target_type, 1);
+		string error;
+		CastParameters parameters(function.GetCastData(), false, &error, local_state.get());
+		if (!function.Cast(input, result, 1, parameters)) {
+			if (try_cast) {
+				return Value(target_type);
+			}
+			throw InvalidInputException("Failed to cast value: %s", error);
+		}
+		return result.GetValue(0);
+	}
+
+	LogicalType source_type;
+	LogicalType target_type;
+	//! The cast of SQLite text, if there is one
+	sqlite_text_cast_t text_cast;
+	CastFunctionSet set;
+	GetCastFunctionInput get_input;
+	BoundCastInfo function;
+	unique_ptr<FunctionLocalState> local_state;
+};
+
+//! The cast of a statement - kept with its target type argument, and bound again if the source type argument changes
+static SQLiteCast &SQLiteCastArgument(sqlite3_context *context, sqlite3_value **argv) {
+	auto &source_type = SQLiteTypeArgument(context, argv, 1);
+	auto cached = static_cast<SQLiteCast *>(sqlite3_get_auxdata(context, 2));
+	if (cached && cached->source_type == source_type) {
+		return *cached;
+	}
+	return SQLiteSetAuxiliaryData(context, 2, make_uniq<SQLiteCast>(source_type, SQLiteParseTypeArgument(argv[2])));
 }
 
 //===--------------------------------------------------------------------===//
@@ -193,15 +299,26 @@ static void SQLiteErrorFunction(sqlite3_context *context, int argc, sqlite3_valu
 template <bool TRY_CAST, bool RESULT>
 static void SQLiteCastFunction(sqlite3_context *context, int argc, sqlite3_value **argv) {
 	SQLiteRunFunction(context, [&]() {
-		auto &source_type = SQLiteTypeArgument(context, argv, 1);
-		auto &target_type = SQLiteTypeArgument(context, argv, 2);
-		auto source = SQLiteUtils::ToDuckDBValue(SQLiteUtils::ReadValue(argv[0]), source_type);
-		if (TRY_CAST) {
-			auto result = source.DefaultTryCastAs(target_type);
-			SQLiteFunctions::SetResult(context, result ? *result : Value(target_type), RESULT);
-		} else {
-			SQLiteFunctions::SetResult(context, source.DefaultCastAs(target_type), RESULT);
+		auto &cast = SQLiteCastArgument(context, argv);
+		if (cast.text_cast && sqlite3_value_type(argv[0]) == SQLITE_TEXT) {
+			auto data = const_char_ptr_cast(sqlite3_value_text(argv[0]));
+			auto size = NumericCast<uint32_t>(sqlite3_value_bytes(argv[0]));
+			// invalid UTF-8 is rejected by the VARCHAR value of the cast below
+			if (Value::StringIsValid(data, size)) {
+				Value result;
+				if (cast.text_cast(string_t(data, size), result)) {
+					SQLiteFunctions::SetResult(context, result, RESULT);
+					return;
+				}
+				if (TRY_CAST) {
+					sqlite3_result_null(context);
+					return;
+				}
+				// the cast below raises the error
+			}
 		}
+		auto source = SQLiteUtils::ToDuckDBValue(SQLiteUtils::ReadValue(argv[0]), cast.source_type);
+		SQLiteFunctions::SetResult(context, cast.Cast(source, TRY_CAST), RESULT);
 	});
 }
 

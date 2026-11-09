@@ -256,3 +256,87 @@ query II
 EXPLAIN SELECT CAST(d AS DOUBLE) + 1 FROM s.special
 ----
 physical_plan	<!REGEX>:(?s).*Sqlite Query.*
+
+# casts of text use the operators of DuckDB's VARCHAR cast
+statement ok
+FROM sqlite_query(l, 'CREATE TABLE texts(i INTEGER, v TEXT)')
+
+statement ok
+FROM sqlite_query(l, 'INSERT INTO texts VALUES (1, '' 42 ''), (2, ''1e2''), (3, ''0x1F''), (4, ''2.5''), (5, ''300''), (6, ''2020-01-01 10:00:00+00''), (7, ''2020-01-01 10:00:00+01''), (8, ''T''), (9, ''''), (10, ''1_000''), (11, NULL)')
+
+foreach db l s
+
+query IIIIIII
+SELECT i, TRY_CAST(v AS TINYINT), TRY_CAST(v AS BIGINT), TRY_CAST(v AS DOUBLE), TRY_CAST(v AS BOOLEAN), TRY_CAST(v AS DATE), TRY_CAST(v AS TIMESTAMP) FROM {db}.texts ORDER BY i
+----
+1	42	42	42.0	NULL	NULL	NULL
+2	100	100	100.0	NULL	NULL	NULL
+3	31	31	NULL	NULL	NULL	NULL
+4	3	3	2.5	NULL	NULL	NULL
+5	NULL	300	300.0	NULL	NULL	NULL
+6	NULL	NULL	NULL	NULL	2020-01-01	2020-01-01 10:00:00
+7	NULL	NULL	NULL	NULL	2020-01-01	2020-01-01 10:00:00
+8	NULL	NULL	NULL	true	NULL	NULL
+9	NULL	NULL	NULL	NULL	NULL	NULL
+10	NULL	1000	1000.0	NULL	NULL	NULL
+11	NULL	NULL	NULL	NULL	NULL	NULL
+
+query I
+SELECT i FROM {db}.texts WHERE TRY_CAST(v AS BIGINT) > 40 ORDER BY i
+----
+1
+2
+5
+10
+
+statement error
+SELECT CAST(v AS TINYINT) FROM {db}.texts WHERE i = 5
+----
+Could not convert string '300' to INT8
+
+statement error
+SELECT CAST(v AS DATE) FROM {db}.texts WHERE i = 8
+----
+invalid date field format: "T"
+
+endloop
+
+query II
+EXPLAIN SELECT i, TRY_CAST(v AS TINYINT), TRY_CAST(v AS BIGINT), TRY_CAST(v AS DOUBLE), TRY_CAST(v AS BOOLEAN), TRY_CAST(v AS DATE), TRY_CAST(v AS TIMESTAMP) FROM s.texts ORDER BY i
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*duckdb_try_cast\("v", 'VARCHAR', 'TINYINT'\).*duckdb_try_cast\("v", 'VARCHAR', 'BIGINT'\).*duckdb_try_cast_result\("v", 'VARCHAR', 'DOUBLE'\).*duckdb_try_cast\("v", 'VARCHAR', 'BOOLEAN'\).*duckdb_try_cast_result\("v", 'VARCHAR', 'DATE'\).*duckdb_try_cast_result\("v", 'VARCHAR', 'TIMESTAMP'\).*
+
+query II
+EXPLAIN SELECT i FROM s.texts WHERE TRY_CAST(v AS BIGINT) > 40
+----
+physical_plan	<REGEX>:(?s).*Sqlite Query.*duckdb_try_cast\("v", 'VARCHAR', 'BIGINT'\).*
+
+statement error
+SELECT CAST(v AS TINYINT) FROM s.texts WHERE i = 5
+----
+Failed to cast value: Could not convert string '300' to INT8
+
+# text that is not valid UTF-8 raises an error, also in TRY_CAST
+statement error
+SELECT * FROM sqlite_query(s, 'SELECT duckdb_try_cast(CAST(x''FF'' AS TEXT), ''VARCHAR'', ''BIGINT'')')
+----
+Invalid unicode
+
+# numbers of a VARCHAR source are cast from DuckDB's text of them - SQLite's text of 0.1 + 0.2 is 0.3
+query II
+SELECT * FROM sqlite_query(s, 'SELECT duckdb_try_cast(0.1 + 0.2, ''VARCHAR'', ''DOUBLE'') = 0.1 + 0.2, duckdb_try_cast(0.1 + 0.2, ''VARCHAR'', ''DOUBLE'') = 0.3')
+----
+1	0
+
+# the type arguments can change from row to row when the functions are called directly
+query I rowsort
+SELECT * FROM sqlite_query(s, 'SELECT duckdb_cast(v, t, ''VARCHAR'') FROM (SELECT ''x'' AS v, ''VARCHAR'' AS t UNION ALL SELECT 0, ''DATE'')')
+----
+1970-01-01
+x
+
+query I rowsort
+SELECT * FROM sqlite_query(s, 'SELECT duckdb_cast(v, ''VARCHAR'', t) FROM (SELECT ''1'' AS v, ''BIGINT'' AS t UNION ALL SELECT ''2020-01-01'', ''DATE'')')
+----
+1
+2020-01-01
