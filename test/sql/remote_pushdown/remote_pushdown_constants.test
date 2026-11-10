@@ -4,6 +4,8 @@
 
 require sqlite_scanner
 
+require-env SQLITE_INTEGRATION_TESTS
+
 statement ok
 ATTACH '{TEST_DIR}/remote_pushdown_constants.db' AS l (TYPE SQLITE)
 

@@ -4,6 +4,8 @@
 
 require sqlite_scanner
 
+require-env SQLITE_INTEGRATION_TESTS
+
 statement ok
 ATTACH '{TEST_DIR}/rp_dml_l.db' AS l (TYPE SQLITE)
 
