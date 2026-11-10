@@ -14,6 +14,6 @@ duckdb_extension_load(tpch)
 if(NOT EMSCRIPTEN AND DEFINED ENV{SQLITE_ENABLE_HTTPFS_TESTS})
     duckdb_extension_load(httpfs
         GIT_URL https://github.com/duckdb/duckdb-httpfs
-        GIT_TAG 740d974694058ab1ecd35a5f2f5dfca0d0977b5d # main 2026-10-18 pin
+        GIT_TAG 5b1a46218dd31e811f1eeb0cac539e755cbb79c7 # main 2026-11-09 pin
     )
 endif()
