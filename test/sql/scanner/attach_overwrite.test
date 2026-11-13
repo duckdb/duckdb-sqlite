@@ -1,0 +1,84 @@
+# name: test/sql/scanner/attach_overwrite.test
+# description: Test sqlite_attach on a file whose views exist already, with and without overwrite
+# group: [scanner]
+
+require sqlite_scanner
+
+statement ok
+CALL sqlite_attach('data/db/count.db');
+
+query TTT
+SELECT view_name, schema_name, temporary FROM duckdb_views() WHERE view_name IN ('empty_tbl', 'mysql_databases') ORDER BY view_name;
+----
+empty_tbl	main	false
+mysql_databases	main	false
+
+statement ok
+COMMENT ON VIEW empty_tbl IS 'old';
+
+statement ok
+COMMENT ON VIEW mysql_databases IS 'old';
+
+statement error
+CALL sqlite_attach('data/db/count.db');
+----
+<REGEX>:Catalog Error: Failed to create view '(empty_tbl|mysql_databases)': View with name "(empty_tbl|mysql_databases)" already exists!.*
+
+statement error
+CALL sqlite_attach('data/db/count.db', overwrite := false);
+----
+<REGEX>:Catalog Error: Failed to create view '(empty_tbl|mysql_databases)': View with name "(empty_tbl|mysql_databases)" already exists!.*
+
+# a failed attach keeps the views that were there
+query TT
+SELECT view_name, comment FROM duckdb_views() WHERE view_name IN ('empty_tbl', 'mysql_databases') ORDER BY view_name;
+----
+empty_tbl	old
+mysql_databases	old
+
+statement ok
+CALL sqlite_attach('data/db/count.db', overwrite := true);
+
+# the comments are gone, so the views were replaced and not kept
+query TTTT
+SELECT view_name, schema_name, temporary, comment FROM duckdb_views() WHERE view_name IN ('empty_tbl', 'mysql_databases') ORDER BY view_name;
+----
+empty_tbl	main	false	NULL
+mysql_databases	main	false	NULL
+
+query I
+SELECT count(*) FROM empty_tbl;
+----
+0
+
+query I
+SELECT count(*) FROM mysql_databases;
+----
+10
+
+# sqlite_attach creates the views on a connection of its own, so the database the caller uses does not matter
+statement ok
+COMMENT ON VIEW empty_tbl IS 'before use';
+
+statement ok
+COMMENT ON VIEW mysql_databases IS 'before use';
+
+statement ok
+ATTACH ':memory:' AS other;
+
+statement ok
+USE other;
+
+statement ok
+CALL sqlite_attach('data/db/count.db', overwrite := true);
+
+query I
+SELECT count(*) FROM duckdb_views() WHERE database_name = 'other';
+----
+0
+
+query TTTT
+SELECT view_name, schema_name, temporary, comment FROM duckdb_views() WHERE view_name IN ('empty_tbl', 'mysql_databases') ORDER BY view_name;
+----
+empty_tbl	main	false	NULL
+mysql_databases	main	false	NULL

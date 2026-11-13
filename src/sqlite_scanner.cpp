@@ -11,6 +11,14 @@
 #include <stdint.h>
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/expression/cast_expression.hpp"
+#include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/parser/expression/function_expression.hpp"
+#include "duckdb/parser/expression/star_expression.hpp"
+#include "duckdb/parser/parsed_data/create_view_info.hpp"
+#include "duckdb/parser/query_node/select_node.hpp"
+#include "duckdb/parser/statement/create_statement.hpp"
+#include "duckdb/parser/statement/select_statement.hpp"
+#include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/storage/table/column_segment.hpp"
@@ -592,6 +600,28 @@ static unique_ptr<FunctionData> AttachBind(ClientContext &context, TableFunction
 	return std::move(result);
 }
 
+static void CreateTableView(Connection &con, const string &file_name, const string &table_name, bool overwrite) {
+	vector<unique_ptr<ParsedExpression>> arguments;
+	arguments.push_back(ConstantExpression::FromValue(Value(file_name)));
+	arguments.push_back(ConstantExpression::FromValue(Value(table_name)));
+	auto scan = make_uniq<TableFunctionRef>();
+	scan->function = make_uniq<FunctionExpression>("sqlite_scan", std::move(arguments));
+	auto node = make_uniq<SelectNode>();
+	node->select_list.push_back(make_uniq<StarExpression>());
+	node->from_table = std::move(scan);
+	auto select = make_uniq<SelectStatement>();
+	select->node = std::move(node);
+
+	auto info = make_uniq<CreateViewInfo>();
+	info->query = std::move(select);
+	info->temporary = false;
+	info->SetQualifiedName(QualifiedName(Identifier(), Identifier::InvalidSchema(), Identifier(table_name)));
+	info->on_conflict = overwrite ? OnCreateConflict::REPLACE_ON_CONFLICT : OnCreateConflict::ERROR_ON_CONFLICT;
+	auto statement = make_uniq<CreateStatement>();
+	statement->info = std::move(info);
+	con.Query(std::move(statement))->ThrowIfError("Failed to create view '" + table_name + "': ");
+}
+
 static void AttachFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &data = data_p.bind_data->CastNoConst<AttachFunctionData>();
 	if (data.finished) {
@@ -605,8 +635,7 @@ static void AttachFunction(ClientContext &context, TableFunctionInput &data_p, D
 	{
 		auto tables = db.GetTables();
 		for (auto &table_name : tables) {
-			dconn.TableFunction("sqlite_scan", {Value(data.file_name), Value(table_name)})
-			    ->CreateView(Identifier(table_name), data.overwrite, false);
+			CreateTableView(dconn, data.file_name, table_name, data.overwrite);
 		}
 	}
 	{
