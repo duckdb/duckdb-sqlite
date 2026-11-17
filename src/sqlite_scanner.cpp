@@ -601,17 +601,20 @@ static unique_ptr<FunctionData> AttachBind(ClientContext &context, TableFunction
 }
 
 static void CreateTableView(Connection &con, const string &file_name, const string &table_name, bool overwrite) {
+	// construct the `sqlite_scan(<file>, <table>)` function expression
 	vector<unique_ptr<ParsedExpression>> arguments;
 	arguments.push_back(ConstantExpression::FromValue(Value(file_name)));
 	arguments.push_back(ConstantExpression::FromValue(Value(table_name)));
 	auto scan = make_uniq<TableFunctionRef>();
 	scan->function = make_uniq<FunctionExpression>("sqlite_scan", std::move(arguments));
+	// construct the `SELECT * FROM sqlite_scan(<file>, <table>)` statement
 	auto node = make_uniq<SelectNode>();
 	node->select_list.push_back(make_uniq<StarExpression>());
 	node->from_table = std::move(scan);
 	auto select = make_uniq<SelectStatement>();
 	select->node = std::move(node);
 
+	// construct the `CREATE [OR REPLACE] VIEW AS` statement using the select statement
 	auto info = make_uniq<CreateViewInfo>();
 	info->query = std::move(select);
 	info->temporary = false;
@@ -619,6 +622,7 @@ static void CreateTableView(Connection &con, const string &file_name, const stri
 	info->on_conflict = overwrite ? OnCreateConflict::REPLACE_ON_CONFLICT : OnCreateConflict::ERROR_ON_CONFLICT;
 	auto statement = make_uniq<CreateStatement>();
 	statement->info = std::move(info);
+	// Execute the CREATE VIEW
 	con.Query(std::move(statement))->ThrowIfError("Failed to create view '" + table_name + "': ");
 }
 
