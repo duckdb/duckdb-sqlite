@@ -1,0 +1,78 @@
+# name: test/sql/scanner/attach_quoted_names.test
+# description: Test sqlite_attach on tables and a file whose names need quoting
+# group: [scanner]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/it''s quoted.db' AS s (TYPE SQLITE);
+
+statement ok
+CALL sqlite_query('s', 'CREATE TABLE "we""ird"(i INTEGER)');
+
+statement ok
+CALL sqlite_query('s', 'INSERT INTO "we""ird" VALUES (1)');
+
+statement ok
+CALL sqlite_query('s', 'CREATE TABLE "it''s"(i INTEGER)');
+
+statement ok
+CALL sqlite_query('s', 'INSERT INTO "it''s" VALUES (2)');
+
+statement ok
+CALL sqlite_query('s', 'CREATE TABLE "Mixed Case"(i INTEGER)');
+
+statement ok
+CALL sqlite_query('s', 'INSERT INTO "Mixed Case" VALUES (3)');
+
+statement ok
+CALL sqlite_query('s', 'CREATE TABLE "select"(i INTEGER)');
+
+statement ok
+CALL sqlite_query('s', 'INSERT INTO "select" VALUES (4)');
+
+statement ok
+CALL sqlite_query('s', 'CREATE TABLE "a.b"(i INTEGER)');
+
+statement ok
+CALL sqlite_query('s', 'INSERT INTO "a.b" VALUES (5)');
+
+statement ok
+DETACH s;
+
+statement ok
+CALL sqlite_attach('{TEST_DIR}/it''s quoted.db');
+
+query TTT
+SELECT view_name, schema_name, temporary FROM duckdb_views() WHERE NOT internal ORDER BY view_name;
+----
+Mixed Case	main	false
+a.b	main	false
+it's	main	false
+select	main	false
+we"ird	main	false
+
+query I
+SELECT i FROM "we""ird";
+----
+1
+
+query I
+SELECT i FROM "it's";
+----
+2
+
+query I
+SELECT i FROM "Mixed Case";
+----
+3
+
+query I
+SELECT i FROM "select";
+----
+4
+
+query I
+SELECT i FROM "a.b";
+----
+5

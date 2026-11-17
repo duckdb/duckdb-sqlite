@@ -1,0 +1,25 @@
+# name: test/sql/scanner/attach_bind_error.test
+# description: Test that sqlite_attach names the view when the scan of a table fails to bind
+# group: [scanner]
+
+require sqlite_scanner
+
+statement ok
+ATTACH '{TEST_DIR}/attach_bind_error.db' AS s (TYPE SQLITE);
+
+# SQLite accepts this default, but the parser of DuckDB rejects it when the scan reads the columns of the table
+statement ok
+CALL sqlite_query('s', 'CREATE TABLE b_bad(i INTEGER DEFAULT (1 MATCH 2))');
+
+statement ok
+DETACH s;
+
+statement error
+CALL sqlite_attach('{TEST_DIR}/attach_bind_error.db');
+----
+<REGEX>:Parser Error: Failed to create view 'b_bad': .*
+
+query I
+SELECT count(*) FROM duckdb_views() WHERE view_name = 'b_bad';
+----
+0
